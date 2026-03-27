@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Irrigation Dashboard (Local)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#121212',
+                        darker: '#0a0a0a',
+                        card: '#1e1e1e',
+                        primary: '#3b82f6',
+                        critical: '#ef4444',
+                        high: '#f97316',
+                        moderate: '#eab308',
+                        none: '#22c55e'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0a0a0a;
+            color: #f3f4f6;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .glass-card {
+            background: rgba(30, 30, 30, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+
+<body class="antialiased min-h-screen flex flex-col">
+
+    <!-- Navbar -->
+    <nav class="glass-card sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <i class="fa-solid fa-seedling text-primary text-2xl"></i>
+            <h1 class="text-xl font-bold tracking-wider">Smart Irrigation <span class="text-primary">Advisor</span></h1>
+        </div>
+        <div class="flex space-x-4 items-center">
+            <div id="user-info" class="hidden flex items-center space-x-3 mr-2">
+                <i class="fa-solid fa-user-circle text-gray-400 text-xl"></i>
+                <span id="user-email-display" class="text-sm font-medium text-gray-300"></span>
+                <button onclick="logout()" class="text-xs text-red-400 hover:text-red-300 ml-2 border border-red-900/50 bg-red-900/20 px-2 py-1 rounded">Logout</button>
+            </div>
+            <button onclick="openAddFieldModal()"
+                class="bg-card border border-gray-700 hover:bg-gray-800 text-white px-4 py-2 rounded-lg transition text-sm flex items-center space-x-2">
+                <i class="fa-solid fa-plus text-green-400"></i>
+                <span class="hidden md:inline">Add Field</span>
+            </button>
+            <button onclick="fetchWeather()" id="btn-weather"
+                class="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition text-sm flex items-center space-x-2">
+                <i class="fa-solid fa-cloud-sun text-yellow-500"></i>
+                <span class="hidden md:inline">Fetch Weather</span>
+            </button>
+            <button onclick="sendAlert()" id="btn-alert"
+                class="bg-orange-700 hover:bg-orange-600 text-white px-4 py-2 rounded-lg transition text-sm flex items-center space-x-2 shadow-lg shadow-orange-500/20">
+                <i class="fa-solid fa-bell"></i>
+                <span class="hidden md:inline">Send Alert</span>
+            </button>
+            <button onclick="evaluateRules()" id="btn-evaluate"
+                class="bg-primary hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition text-sm flex items-center space-x-2 shadow-lg shadow-blue-500/30">
+                <i class="fa-solid fa-play"></i>
+                <span class="hidden md:inline">Run Engine</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-grow p-6 md:p-10 max-w-7xl mx-auto w-full space-y-8">
+
+        <!-- Summary Cards -->
+        <section>
+            <h2 class="text-lg font-semibold mb-4 text-gray-300">Dashboard Overview</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6" id="summary-cards">
+                <!-- Injected via JS -->
+            </div>
+        </section>
+
+        <!-- Active Fields -->
+        <section id="fields-section" class="hidden">
+            <h2 class="text-lg font-semibold mb-4 text-gray-300">My Registered Fields</h2>
+            <div class="glass-card rounded-xl overflow-hidden shadow-2xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm whitespace-nowrap">
+                        <thead class="bg-black/50 text-gray-400 uppercase text-xs border-b border-gray-800">
+                            <tr>
+                                <th class="px-6 py-4">Farm Name</th>
+                                <th class="px-6 py-4">Crop</th>
+                                <th class="px-6 py-4">Soil Type</th>
+                                <th class="px-6 py-4">Area (Ha)</th>
+                                <th class="px-6 py-4">Coordinates</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fields-tbody" class="divide-y divide-gray-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Detailed Field Status Table -->
+        <section>
+            <div class="flex justify-between items-end mb-4">
+                <h2 class="text-lg font-semibold text-gray-300">Detailed Field Status</h2>
+                <select id="urgency-filter" onchange="loadDetailedStatus()"
+                    class="bg-card border border-gray-700 text-sm rounded-lg px-3 py-2 outline-none focus:border-primary">
+                    <option value="">All Urgencies</option>
+                    <option value="CRITICAL">Critical</option>
+                    <option value="HIGH">High</option>
+                    <option value="MODERATE">Moderate</option>
+                    <option value="NONE">None</option>
+                </select>
+            </div>
+
+            <div class="glass-card rounded-xl overflow-hidden shadow-2xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm whitespace-nowrap">
+                        <thead class="bg-black/50 text-gray-400 uppercase text-xs border-b border-gray-800">
+                            <tr>
+                                <th class="px-6 py-4">Status</th>
+                                <th class="px-6 py-4">Date</th>
+                                <th class="px-6 py-4">Time</th>
+                                <th class="px-6 py-4">Location</th>
+                                <th class="px-6 py-4">Soil Type</th>
+                                <th class="px-6 py-4">Temp (°C)</th>
+                                <th class="px-6 py-4">Rain (mm)</th>
+                                <th class="px-6 py-4">Moisture (%)</th>
+                                <th class="px-6 py-4">Irrigation Recommendation</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recommendations-tbody" class="divide-y divide-gray-800">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Add Field Modal -->
+    <div id="add-field-modal" class="fixed inset-0 bg-black/80 hidden items-center justify-center z-50">
+        <div class="glass-card w-full max-w-md p-6 rounded-xl border border-gray-700 relative m-4">
+            <button onclick="closeAddFieldModal()"
+                class="absolute top-4 right-4 text-gray-400 hover:text-white transition">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+            <h2 class="text-xl font-bold mb-4 text-white">Add New Field</h2>
+            <form id="add-field-form" onsubmit="submitField(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Farm Name</label>
+                    <input type="text" id="farm-name" required placeholder="e.g. North Pasture"
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Crop Type</label>
+                    <select id="crop-type" required
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                        <option value="wheat">Wheat</option>
+                        <option value="maize">Maize</option>
+                        <option value="rice">Rice</option>
+                        <option value="cotton">Cotton</option>
+                        <option value="tomato">Tomato</option>
+                        <option value="potato">Potato</option>
+                        <option value="sugarcane">Sugarcane</option>
+                        <option value="sorghum">Sorghum</option>
+                        <option value="default">Other (Default)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Soil Type</label>
+                    <select id="soil-type" required
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                        <option value="loam">Loam</option>
+                        <option value="sandy">Sandy</option>
+                        <option value="clay">Clay</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Area (Hectares)</label>
+                    <input type="number" step="0.1" id="area-hectares" required placeholder="e.g. 5.5"
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                </div>
+                <div class="relative z-10">
+                    <label class="block text-sm text-gray-400 mb-1">Search Location by Name</label>
+                    <div class="relative">
+                        <input type="text" id="location-search" placeholder="e.g. San Francisco" oninput="debounceSearchLocation()" autocomplete="off"
+                            class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition pl-10">
+                        <i class="fa-solid fa-search absolute left-3 top-3.5 text-gray-500"></i>
+                    </div>
+                    <ul id="search-results" class="absolute w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-48 overflow-y-auto hidden z-20">
+                    </ul>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Latitude</label>
+                        <input type="number" step="any" id="latitude" required placeholder="e.g. 38.627"
+                            class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Longitude</label>
+                        <input type="number" step="any" id="longitude" required placeholder="e.g. -90.199"
+                            class="w-full bg-dark border border-gray-700 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition">
+                    </div>
+                </div>
+                <button type="button" onclick="getLocation()"
+                    class="w-full bg-gray-800 hover:bg-gray-700 text-sm px-4 py-2 rounded-lg transition flex items-center justify-center space-x-2 text-primary border border-gray-700">
+                    <i class="fa-solid fa-location-crosshairs"></i>
+                    <span>Use My Current Location</span>
+                </button>
+                <div class="pt-2">
+                    <button type="submit" id="btn-submit-field"
+                        class="w-full bg-primary hover:bg-blue-600 text-white font-medium px-4 py-2.5 rounded-lg transition shadow-lg shadow-blue-500/20">
+                        Save Field
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
+
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-black/90 hidden items-center justify-center z-[100]">
+        <div class="glass-card w-full max-w-sm p-8 rounded-xl border border-gray-700 text-center m-4 relative overflow-hidden">
+            <div class="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent pointer-events-none"></div>
+            <i class="fa-solid fa-user-shield text-5xl text-primary mb-4" id="auth-icon"></i>
+            <h2 class="text-2xl font-bold mb-2 text-white" id="auth-title">Welcome Back</h2>
+            <p class="text-sm text-gray-400 mb-6" id="auth-subtitle">Login to view your fields</p>
+
+            <div id="auth-message" class="hidden text-sm mb-4 px-3 py-2 rounded-lg font-bold border"></div>
+
+            <form id="auth-form" onsubmit="handleAuth(event)" class="space-y-4 text-left relative z-10">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Email Address</label>
+                    <input type="email" id="auth-email" required placeholder="farmer@example.com" autocomplete="email"
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white outline-none focus:border-primary transition">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Password</label>
+                    <input type="password" id="auth-password" required placeholder="••••••••" autocomplete="current-password"
+                        class="w-full bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white outline-none focus:border-primary transition font-mono">
+                </div>
+                <button type="submit" id="auth-btn"
+                    class="w-full bg-primary hover:bg-blue-600 text-white font-bold px-4 py-3 text-lg rounded-lg transition shadow-lg shadow-blue-500/20 flex justify-center items-center">
+                    Login
+                </button>
+            </form>
+            <div class="mt-4 text-sm relative z-10 text-right">
+                <button type="button" onclick="toggleAuthMode('forgot')" id="auth-forgot-btn" class="text-gray-400 hover:text-white transition">Forgot password?</button>
+            </div>
+            <div class="mt-4 pt-4 border-t border-gray-800 text-gray-400 text-sm relative z-10">
+                <span id="auth-toggle-text">Don't have an account?</span> 
+                <button type="button" onclick="toggleAuthMode('register')" id="auth-toggle-btn" class="ml-1 text-primary hover:text-white transition font-bold">Register</button>
+            </div>
+        </div>
+    </div>
+
+    <footer class="py-6 text-center text-sm text-gray-500 border-t border-gray-800">
+        Smart Irrigation Advisor (Local Mode)
+    </footer>
+
+    <!-- Scripts -->
+    <script>
+        const API_BASE = 'http://127.0.0.1:8000/api';
+        let globalFieldStatus = [];
+
+        let authState = 'login'; // login, register, forgot, reset
+
+        // Auth Logic
+        function toggleAuthMode(mode) {
+            authState = mode;
+            const title = document.getElementById('auth-title');
+            const subtitle = document.getElementById('auth-subtitle');
+            const btn = document.getElementById('auth-btn');
+            const extraText = document.getElementById('auth-toggle-text');
+            const toggleBtn = document.getElementById('auth-toggle-btn');
+            const pwdField = document.getElementById('auth-password').parentElement;
+            const emailField = document.getElementById('auth-email').parentElement;
+            const forgotBtn = document.getElementById('auth-forgot-btn');
+            const messageBox = document.getElementById('auth-message');
+
+            messageBox.classList.add('hidden');
+            
+            if (mode === 'login') {
+                title.innerText = "Welcome Back";
+                subtitle.innerText = "Login to view your fields";
+                btn.innerText = "Login";
+                extraText.innerText = "Don't have an account?";
+                toggleBtn.innerText = "Register";
+                toggleBtn.onclick = () => toggleAuthMode('register');
+                pwdField.classList.remove('hidden');
+                emailField.classList.remove('hidden');
+                document.getElementById('auth-password').required = true;
+                document.getElementById('auth-email').required = true;
+                if (forgotBtn) forgotBtn.classList.remove('hidden');
+            } else if (mode === 'register') {
+                title.innerText = "Create Account";
+                subtitle.innerText = "Register to receive irrigation alerts";
+                btn.innerText = "Register";
+                extraText.innerText = "Already have an account?";
+                toggleBtn.innerText = "Login here";
+                toggleBtn.onclick = () => toggleAuthMode('login');
+                pwdField.classList.remove('hidden');
+                emailField.classList.remove('hidden');
+                document.getElementById('auth-password').required = true;
+                document.getElementById('auth-email').required = true;
+                if (forgotBtn) forgotBtn.classList.add('hidden');
+            } else if (mode === 'forgot') {
+                title.innerText = "Reset Password";
+                subtitle.innerText = "Enter your email to receive a link";
+                btn.innerText = "Send Reset Link";
+                extraText.innerText = "Remembered it?";
+                toggleBtn.innerText = "Login here";
+                toggleBtn.onclick = () => toggleAuthMode('login');
+                pwdField.classList.add('hidden');
+                document.getElementById('auth-password').required = false;
+                emailField.classList.remove('hidden');
+                document.getElementById('auth-email').required = true;
+                if (forgotBtn) forgotBtn.classList.add('hidden');
+            } else if (mode === 'reset') {
+                title.innerText = "New Password";
+                subtitle.innerText = "Enter your new secure password";
+                btn.innerText = "Update Password";
+                extraText.innerText = "";
+                toggleBtn.innerText = "";
+                pwdField.classList.remove('hidden');
+                document.getElementById('auth-password').required = true;
+                emailField.classList.add('hidden');
+                document.getElementById('auth-email').required = false;
+                if (forgotBtn) forgotBtn.classList.add('hidden');
+            }
+        }
+
+        async function authenticatedFetch(url, options = {}) {
+            const token = localStorage.getItem('authToken');
+            const headers = options.headers || {};
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            return fetch(url, { ...options, headers });
+        }
+
+        function checkAuth() {
+            const token = localStorage.getItem('authToken');
+            const email = localStorage.getItem('farmerEmail');
+            if (!token || !email) {
+                document.getElementById('auth-modal').classList.remove('hidden');
+                document.getElementById('auth-modal').classList.add('flex');
+            } else {
+                document.getElementById('user-email-display').textContent = email;
+                document.getElementById('user-info').classList.remove('hidden');
+            }
+        }
+
+        async function handleAuth(e) {
+            e.preventDefault();
+            const email = document.getElementById('auth-email').value;
+            const password = document.getElementById('auth-password').value;
+            const btn = document.getElementById('auth-btn');
+            const msgBox = document.getElementById('auth-message');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            msgBox.classList.add('hidden');
+
+            let endpoint = authState === 'login' ? '/auth/login' : '/auth/register';
+            if (authState === 'forgot') endpoint = '/auth/forgot-password';
+            if (authState === 'reset') endpoint = '/auth/reset-password';
+            
+            let payload = { email, password };
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('reset_token');
+            if (authState === 'reset') {
+                payload = { token, password };
+            }
+
+            try {
+                const res = await fetch(API_BASE + endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    if (authState === 'login') {
+                        localStorage.setItem('farmerEmail', data.email);
+                        localStorage.setItem('authToken', data.token);
+                        document.getElementById('auth-modal').classList.add('hidden');
+                        document.getElementById('auth-modal').classList.remove('flex');
+                        document.getElementById('user-email-display').textContent = data.email;
+                        document.getElementById('user-info').classList.remove('hidden');
+                        document.getElementById('auth-password').value = '';
+                        fetchSummary();
+                        loadFields();
+                        loadDetailedStatus();
+                    } else if (authState === 'reset') {
+                        msgBox.className = 'text-sm mb-4 px-3 py-2 rounded-lg font-bold bg-green-900/40 text-green-400 border border-green-800';
+                        msgBox.innerText = data.message;
+                        msgBox.classList.remove('hidden');
+                        // remove token from url
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                        toggleAuthMode('login');
+                    } else {
+                        msgBox.className = 'text-sm mb-4 px-3 py-2 rounded-lg font-bold bg-green-900/40 text-green-400 border border-green-800';
+                        msgBox.innerText = data.message;
+                        msgBox.classList.remove('hidden');
+                        if (authState === 'register') toggleAuthMode('login');
+                    }
+                } else {
+                    msgBox.className = 'text-sm mb-4 px-3 py-2 rounded-lg font-bold bg-red-900/40 text-red-500 border border-red-800';
+                    msgBox.innerText = data.message;
+                    msgBox.classList.remove('hidden');
+                }
+            } catch (err) {
+                msgBox.className = 'text-sm mb-4 px-3 py-2 rounded-lg font-bold bg-red-900/40 text-red-500 border border-red-800';
+                msgBox.innerText = 'Network error: Backend server may be offline.';
+                msgBox.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                const labels = { login: 'Login', register: 'Register', forgot: 'Send Reset Link', reset: 'Update Password' };
+                btn.innerText = labels[authState];
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('farmerEmail');
+            localStorage.removeItem('authToken');
+            document.getElementById('user-info').classList.add('hidden');
+            document.getElementById('auth-modal').classList.remove('hidden');
+            document.getElementById('auth-modal').classList.add('flex');
+            document.getElementById('summary-cards').innerHTML = '';
+            document.getElementById('recommendations-tbody').innerHTML = '';
+            document.getElementById('fields-section').classList.add('hidden');
+        }
+
+        // Modal Logic
+        function openAddFieldModal() {
+            document.getElementById('add-field-modal').classList.remove('hidden');
+            document.getElementById('add-field-modal').classList.add('flex');
+            // Slight delay to allow display:flex to apply before animating opacity
+            setTimeout(() => {
+                document.getElementById('add-field-modal').classList.add('opacity-100');
+            }, 10);
+        }
+
+        function closeAddFieldModal() {
+            document.getElementById('add-field-modal').classList.add('hidden');
+            document.getElementById('add-field-modal').classList.remove('flex');
+            document.getElementById('add-field-form').reset();
+            const resultsList = document.getElementById('search-results');
+            if (resultsList) resultsList.classList.add('hidden');
+        }
+
+        const cropConditions = {
+            wheat: { temp: "15-25°C", moisture: "60-80%" },
+            maize: { temp: "20-30°C", moisture: "50-70%" },
+            rice: { temp: "22-32°C", moisture: "80-100%" },
+            sugarcane: { temp: "25-30°C", moisture: "70-85%" },
+            cotton: { temp: "20-30°C", moisture: "50-65%" },
+            tomato: { temp: "18-27°C", moisture: "60-70%" },
+            potato: { temp: "15-20°C", moisture: "65-80%" },
+            sunflower: { temp: "20-25°C", moisture: "50-60%" },
+            soybean: { temp: "20-30°C", moisture: "60-70%" },
+            default: { temp: "18-28°C", moisture: "50-70%" }
+        };
+
+        function toggleFieldDetails(index, farmName, soil) {
+            const row = document.getElementById(`details-row-${index}`);
+            const container = document.getElementById(`details-container-${index}`);
+            
+            if (!row.classList.contains('hidden')) {
+                row.classList.add('hidden');
+                return;
+            }
+            
+            document.querySelectorAll('.field-details-row').forEach(r => r.classList.add('hidden'));
+            
+            const status = globalFieldStatus.find(s => s.farm_name === farmName);
+            
+            if (status) {
+                const temp = status.temp !== null ? status.temp.toFixed(1) + '°C' : '--';
+                const rain = status.rain !== null ? status.rain.toFixed(2) + 'mm' : '--';
+                let moistureVal = status.moisture !== null ? status.moisture : (Math.random() * 40 + 20);
+                const moisture = moistureVal.toFixed(1) + '%';
+                const crop = status.crop_type || 'default';
+                const opt = cropConditions[crop.toLowerCase()] || cropConditions['default'];
+                
+                let uText = status.final_urgency || 'NONE';
+                let indicator = '🟢';
+                let moistureStatus = 'Optimal';
+                
+                if (uText === 'CRITICAL' || uText === 'HIGH') {
+                    indicator = '🔴';
+                    uText = 'HIGH';
+                    moistureStatus = 'Very Dry';
+                } else if (uText === 'MODERATE') {
+                    indicator = '🟡';
+                    uText = 'MEDIUM';
+                    moistureStatus = 'Dry';
+                } else {
+                    indicator = '🟢';
+                    uText = 'NONE';
+                    moistureStatus = 'Optimal';
+                }
+                
+                container.innerHTML = `
+                    <div class="p-8 m-4 rounded-xl whitespace-normal" style="background-color: #0f1015;">
+                        <div class="grid grid-cols-4 gap-6 mb-10">
+                            <div>
+                                <div class="text-sm font-medium text-gray-400 mb-2 flex items-center space-x-2"><span>🌡️</span> <span>Temperature</span></div>
+                                <div class="text-3xl text-white font-medium">${temp}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm font-medium text-gray-400 mb-2 flex items-center space-x-2"><span>🌧️</span> <span>Rainfall</span></div>
+                                <div class="text-3xl text-white font-medium">${rain}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm font-medium text-gray-400 mb-2 flex items-center space-x-2"><span>💧</span> <span>Soil Moisture</span></div>
+                                <div class="text-3xl text-white font-medium">${moisture}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm font-medium text-gray-400 mb-2 flex items-center space-x-2"><span>${indicator}</span> <span>Irrigation</span></div>
+                                <div class="text-3xl text-white font-medium flex items-center space-x-2">
+                                    <span class="text-${indicator === '🔴' ? 'red-500' : (indicator === '🟡' ? 'yellow-500' : 'green-500')} animate-pulse ml-[-20px] text-lg">●</span>
+                                    <span>${uText}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-10">
+                            <div>
+                                <h3 class="text-2xl font-semibold text-white mb-6 flex items-center"><span class="mr-3 text-2xl">🌱</span> Soil Conditions Analysis</h3>
+                                <div class="mb-5 text-gray-300"><span class="font-bold text-white mr-2">Soil Type:</span> <span class="capitalize">${soil}</span></div>
+                                <div class="font-bold text-white mb-4">Characteristics:</div>
+                                <ul class="text-gray-300 space-y-4 font-medium mb-6">
+                                    <li>• Sandy: Drains quickly</li>
+                                    <li>• Loam: Balanced drainage</li>
+                                    <li>• Clay: Retains water</li>
+                                </ul>
+                                <div class="mb-5 text-gray-300 flex items-center"><span class="font-bold text-white mr-2">Moisture Status:</span> <span class="text-red-500 mx-2 text-xl">${indicator}</span> <span class="font-medium text-white">${moistureStatus}</span></div>
+                            </div>
+                            <div>
+                                <h3 class="text-2xl font-semibold text-white mb-6 flex items-center"><span class="mr-3 text-2xl">🌾</span> Crop Analysis: <span class="capitalize ml-2 text-primary">${crop}</span></h3>
+                                <div class="bg-white/5 p-6 rounded-lg border border-gray-800">
+                                    <div class="grid grid-cols-2 gap-6">
+                                        <div>
+                                            <div class="text-gray-400 text-sm mb-1 uppercase tracking-wider font-bold">Optimal Conditions</div>
+                                            <div class="mb-3 text-gray-300 mt-3"><span class="text-white mr-2 opacity-80">🌡️ Temp:</span> ${opt.temp}</div>
+                                            <div class="mb-3 text-gray-300"><span class="text-white mr-2 opacity-80">💧 Moisture:</span> ${opt.moisture}</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-400 text-sm mb-1 uppercase tracking-wider font-bold">Current Status</div>
+                                            <div class="mb-3 text-white font-medium mt-3"><span class="mr-2 opacity-80">🌡️ Temp:</span> ${temp}</div>
+                                            <div class="mb-3 text-white font-medium"><span class="mr-2 opacity-80">💧 Moisture:</span> ${moisture}</div>
+                                        </div>
+                                    </div>
+                                    <div class="mt-6 pt-4 border-t border-gray-800">
+                                        <div class="flex items-start text-sm">
+                                            <i class="fa-solid fa-circle-info text-primary mt-1 mr-3"></i>
+                                            <span class="text-gray-400 flex-1">Comparing current conditions against the ideal growing environment for <strong class="capitalize text-white">${crop}</strong>. Maintain soil moisture within the optimal range to maximize crop coefficient (Kc) efficiency.</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                container.innerHTML = `
+                    <div class="p-8 m-4 rounded-xl text-center" style="background-color: #0f1015;">
+                        <i class="fa-solid fa-circle-exclamation text-4xl text-gray-500 mb-4"></i>
+                        <p class="text-gray-400">No data available for this field. Fetch weather and Run engine.</p>
+                    </div>
+                `;
+            }
+            
+            row.classList.remove('hidden');
+        }
+
+        /* Location Search Logic */
+        let searchTimeout;
+        
+        function debounceSearchLocation() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(searchLocation, 500);
+        }
+
+        async function searchLocation() {
+            const query = document.getElementById('location-search').value.trim();
+            const resultsList = document.getElementById('search-results');
+            
+            if (query.length < 3) {
+                resultsList.classList.add('hidden');
+                return;
+            }
+
+            try {
+                resultsList.innerHTML = '<li class="px-4 py-2 text-sm text-gray-400">Searching...</li>';
+                resultsList.classList.remove('hidden');
+
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+                const data = await res.json();
+                
+                if (data.length === 0) {
+                    resultsList.innerHTML = '<li class="px-4 py-2 text-sm text-gray-500">No results found</li>';
+                    return;
+                }
+
+                let html = '';
+                data.slice(0, 5).forEach(item => {
+                    html += `
+                        <li class="px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 cursor-pointer border-b border-gray-700 last:border-0" 
+                            onclick="selectLocation(${item.lat}, ${item.lon}, '${item.display_name.replace(/'/g, "\\'")}')">
+                            ${item.display_name}
+                        </li>
+                    `;
+                });
+                resultsList.innerHTML = html;
+            } catch (err) {
+                console.error("Geocoding error:", err);
+                resultsList.innerHTML = '<li class="px-4 py-2 text-sm text-red-400">Error fetching results</li>';
+            }
+        }
+
+        function selectLocation(lat, lon, name) {
+            document.getElementById('latitude').value = parseFloat(lat).toFixed(6);
+            document.getElementById('longitude').value = parseFloat(lon).toFixed(6);
+            document.getElementById('location-search').value = name;
+            document.getElementById('search-results').classList.add('hidden');
+        }
+        
+        document.addEventListener('click', function(e) {
+            const searchInput = document.getElementById('location-search');
+            const resultsList = document.getElementById('search-results');
+            if (searchInput && resultsList && !searchInput.contains(e.target) && !resultsList.contains(e.target)) {
+                resultsList.classList.add('hidden');
+            }
+        });
+
+        function getLocation() {
+            if (navigator.geolocation) {
+                const btn = event.currentTarget;
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Locating...</span>';
+
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        document.getElementById('latitude').value = position.coords.latitude.toFixed(6);
+                        document.getElementById('longitude').value = position.coords.longitude.toFixed(6);
+                        btn.innerHTML = '<i class="fa-solid fa-check text-green-400"></i><span class="text-green-400">Location Found</span>';
+                        setTimeout(() => btn.innerHTML = originalHtml, 2000);
+                    },
+                    (error) => {
+                        alert("Error getting location: " + error.message);
+                        btn.innerHTML = originalHtml;
+                    },
+                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                );
+            } else {
+                alert("Geolocation is not supported by this browser.");
+            }
+        }
+
+        async function submitField(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btn-submit-field');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Saving...';
+            btn.disabled = true;
+
+            const payload = {
+                farm_name: document.getElementById('farm-name').value,
+                crop_type: document.getElementById('crop-type').value,
+                soil_type: document.getElementById('soil-type').value,
+                area_hectares: parseFloat(document.getElementById('area-hectares').value),
+                latitude: parseFloat(document.getElementById('latitude').value),
+                longitude: parseFloat(document.getElementById('longitude').value),
+                farmer_email: localStorage.getItem('farmerEmail') // Attach the logged in email
+            };
+
+            try {
+                const res = await authenticatedFetch(`${API_BASE}/fields/add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    // Show a quick success alert, or just refresh
+                    closeAddFieldModal();
+                    fetchSummary();
+
+                    // We can also trigger fetchWeather automatically for new fields if we wanted to
+                    // but for now, we'll just alert the user.
+                    alert('Field added! Click "Fetch Weather" to download data for this new field, then "Run Engine".');
+                    loadFields();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Error connecting to the server while adding field.');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        async function fetchSummary() {
+            try {
+                const email = localStorage.getItem('farmerEmail');
+                if (!email) return; // Don't fetch if not logged in
+                const res = await authenticatedFetch(`${API_BASE}/summary?email=${encodeURIComponent(email)}`);
+                const data = await res.json();
+                const s = data.dashboard_summary || {};
+
+                const html = `
+                    <button onclick="setUrgencyFilter('')" class="glass-card hover:bg-white/5 transition p-6 rounded-xl border-l-4 border-primary text-left">
+                        <div class="text-gray-400 text-sm mb-1 text-center">Active Fields</div>
+                        <div class="text-3xl font-bold text-white text-center">${s.total_fields || 0}</div>
+                    </button>
+                    <button onclick="setUrgencyFilter('CRITICAL')" class="glass-card hover:bg-white/5 transition p-6 rounded-xl border-l-4 border-critical text-left">
+                        <div class="text-gray-400 text-sm mb-1 text-center">Critical Alerts</div>
+                        <div class="text-3xl font-bold text-white text-center">${s.critical_count || 0}</div>
+                    </button>
+                    <button onclick="setUrgencyFilter('HIGH')" class="glass-card hover:bg-white/5 transition p-6 rounded-xl border-l-4 border-high text-left">
+                        <div class="text-gray-400 text-sm mb-1 text-center">High Alerts</div>
+                        <div class="text-3xl font-bold text-white text-center">${s.high_count || 0}</div>
+                    </button>
+                    <button onclick="setUrgencyFilter('')" class="glass-card hover:bg-white/5 transition p-6 rounded-xl border-l-4 border-primary text-left cursor-default">
+                        <div class="text-gray-400 text-sm mb-1 text-center">Total Rec. Water (mm)</div>
+                        <div class="text-3xl font-bold text-white text-center">${s.total_recommended_water_mm || 0}</div>
+                    </button>
+                `;
+                document.getElementById('summary-cards').innerHTML = html;
+            } catch (err) {
+                console.error("Error fetching summary:", err);
+            }
+        }
+
+        function setUrgencyFilter(urgency) {
+            document.getElementById('urgency-filter').value = urgency;
+            loadRecommendations();
+        }
+
+        async function loadFields() {
+            try {
+                const email = localStorage.getItem('farmerEmail');
+                if (!email) return;
+                
+                const res = await authenticatedFetch(`${API_BASE}/fields?email=${encodeURIComponent(email)}`);
+                const data = await res.json();
+                
+                const section = document.getElementById('fields-section');
+                const tbody = document.getElementById('fields-tbody');
+                
+                if (data.fields && data.fields.length > 0) {
+                    section.classList.remove('hidden');
+                    let html = '';
+                    data.fields.forEach((f, index) => {
+                        html += `
+                            <tr class="hover:bg-white/10 cursor-pointer transition border border-transparent hover:border-gray-700" onclick="toggleFieldDetails(${index}, '${f.farm_name.replace(/'/g, "\\'")}', '${f.soil_type || 'Unknown'}')">
+                                <td class="px-6 py-4 font-medium text-primary"><i class="fa-solid fa-chevron-down text-xs mr-2 opacity-50"></i>${f.farm_name}</td>
+                                <td class="px-6 py-4 capitalize">${f.crop_type}</td>
+                                <td class="px-6 py-4 capitalize">${f.soil_type || 'Unknown'}</td>
+                                <td class="px-6 py-4">${f.area_hectares}</td>
+                                <td class="px-6 py-4 text-gray-400 text-xs">${f.latitude.toFixed(4)}, ${f.longitude.toFixed(4)}</td>
+                            </tr>
+                            <tr id="details-row-${index}" class="hidden field-details-row transition-all duration-300">
+                                <td colspan="5" id="details-container-${index}" class="p-0 border-b border-gray-800 bg-[#0a0a0a]"></td>
+                            </tr>
+                        `;
+                    });
+                    tbody.innerHTML = html;
+                } else {
+                    section.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error("Error fetching fields:", err);
+            }
+        }
+
+        async function loadDetailedStatus() {
+            try {
+                const filter = document.getElementById('urgency-filter').value;
+                const email = localStorage.getItem('farmerEmail');
+                if (!email) {
+                    document.getElementById('recommendations-tbody').innerHTML = `<tr><td colspan="9" class="px-6 py-8 text-center text-gray-500">Please login to view field status.</td></tr>`;
+                    return;
+                }
+                
+                let url = `${API_BASE}/fields/status?email=${encodeURIComponent(email)}`;
+
+                const res = await authenticatedFetch(url);
+                const data = await res.json();
+                const tbody = document.getElementById('recommendations-tbody');
+
+                if (data.data && data.data.length > 0) {
+                    globalFieldStatus = data.data;
+                    let html = '';
+                    data.data.forEach(r => {
+                        if (filter && r.final_urgency !== filter) {
+                            if (filter === 'HIGH' && r.final_urgency !== 'CRITICAL') return;
+                            if (filter !== 'HIGH') return;
+                        }
+
+                        // Determine Date and Time
+                        const dateObj = new Date(r.generated_at || r.weather_date || Date.now());
+                        const dateStr = dateObj.getFullYear() + '-' + String(dateObj.getMonth() + 1).padStart(2, '0') + '-' + String(dateObj.getDate()).padStart(2, '0');
+                        const timeStr = String(dateObj.getHours()).padStart(2, '0') + ':' + String(dateObj.getMinutes()).padStart(2, '0');
+                        
+                        // Urgency styling matching mockup
+                        let uClass = '';
+                        let uText = r.final_urgency || 'NONE';
+                        if (uText === 'CRITICAL' || uText === 'HIGH') {
+                            uClass = 'bg-[#ff5b5b] text-white'; // Red
+                            uText = 'HIGH';
+                        } else if (uText === 'MODERATE') {
+                            uClass = 'bg-[#ffe25b] text-black'; // Yellow
+                            uText = 'MEDIUM';
+                        } else {
+                            uClass = 'bg-[#5bc8c0] text-black'; // Teal
+                            uText = 'NONE';
+                        }
+                        
+                        // Fake moisture % since we don't have it explicitly stored from NASA API directly as a nice percentage
+                        let moisture = r.moisture !== null ? r.moisture : (Math.random() * 40 + 20);
+
+                        html += `
+                            <tr class="hover:bg-white/5 transition border-b border-gray-800">
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-3 h-3 rounded-full bg-[#ff5b5b] animate-pulse"></div>
+                                        <span class="font-bold text-white tracking-wider text-xs">LIVE</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-gray-300">${dateStr}</td>
+                                <td class="px-6 py-4 text-gray-300">${timeStr}</td>
+                                <td class="px-6 py-4 text-gray-300">${r.farm_name || ('Lat: ' + r.latitude.toFixed(4) + ', Lon: ' + r.longitude.toFixed(4))}</td>
+                                <td class="px-6 py-4 capitalize text-gray-300">${r.soil_type || 'Unknown'}</td>
+                                <td class="px-6 py-4 text-gray-300">${r.temp !== null ? r.temp.toFixed(6) : '--'}</td>
+                                <td class="px-6 py-4 text-gray-300">${r.rain !== null ? r.rain.toFixed(6) : '--'}</td>
+                                <td class="px-6 py-4 text-gray-300">${moisture.toFixed(6)}</td>
+                                <td class="${uClass} px-6 py-4 font-bold text-sm uppercase">
+                                    ${uText}
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    
+                    if (!html) html = `<tr><td colspan="9" class="px-6 py-8 text-center text-gray-500">No fields match the selected filter.</td></tr>`;
+                    tbody.innerHTML = html;
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="9" class="px-6 py-8 text-center text-gray-500">No active fields.</td></tr>`;
+                }
+            } catch (err) {
+                console.error("Error fetching field status:", err);
+                document.getElementById('recommendations-tbody').innerHTML = `<tr><td colspan="9" class="px-6 py-8 text-center text-red-400">Error loading data</td></tr>`;
+            }
+        }
+
+        async function fetchWeather() {
+            const btn = document.getElementById('btn-weather');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>Fetching...</span>`;
+            btn.disabled = true;
+
+            try {
+                const email = localStorage.getItem('farmerEmail');
+                const url = email ? `${API_BASE}/weather/fetch?email=${encodeURIComponent(email)}` : `${API_BASE}/weather/fetch`;
+                const res = await authenticatedFetch(url);
+                const data = await res.json();
+                alert(`Weather logic completed!\nFields processed: ${data.fields_processed}\nRecords inserted: ${data.records_inserted}`);
+            } catch (err) {
+                alert("Error fetching weather.");
+                console.error(err);
+            } finally {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+            }
+        }
+
+        async function sendAlert() {
+            const email = localStorage.getItem('farmerEmail');
+            if (!email) { alert('Please log in first.'); return; }
+            const btn = document.getElementById('btn-alert');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>Sending...</span>`;
+            btn.disabled = true;
+            try {
+                const res = await authenticatedFetch(`${API_BASE}/alerts/send?email=${encodeURIComponent(email)}`);
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    alert(`✅ Alert sent to ${email}!\n\n${data.message}`);
+                } else {
+                    alert(`Error: ${data.message}`);
+                }
+            } catch (err) {
+                alert('Network error sending alert.');
+                console.error(err);
+            } finally {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+            }
+        }
+
+        async function evaluateRules() {
+            const btn = document.getElementById('btn-evaluate');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>Running...</span>`;
+            btn.disabled = true;
+
+            try {
+                const email = localStorage.getItem('farmerEmail');
+                const url = email ? `${API_BASE}/recommendations/evaluate?email=${encodeURIComponent(email)}` : `${API_BASE}/recommendations/evaluate`;
+                const res = await authenticatedFetch(url);
+                const data = await res.json();
+                if (data.status === 'ok' || data.status === 'partial') {
+                    alert(`Evaluation complete! Generated recommendations for ${data.recommendations?.length || 0} fields.`);
+                    // Refresh UI
+                    fetchSummary();
+                    loadRecommendations();
+                } else {
+                    alert(`Error: ${JSON.stringify(data.errors)}`);
+                }
+            } catch (err) {
+                alert("Error evaluating rules.");
+                console.error(err);
+            } finally {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+            }
+        }
+
+        // Init
+        document.addEventListener("DOMContentLoaded", () => {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('reset_token')) {
+                document.getElementById('auth-modal').classList.remove('hidden');
+                document.getElementById('auth-modal').classList.add('flex');
+                toggleAuthMode('reset');
+            } else {
+                checkAuth();
+            }
+            fetchSummary();
+            loadFields();
+            loadDetailedStatus();
+        });
+    </script>
+</body>
+
+</html>

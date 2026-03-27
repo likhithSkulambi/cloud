@@ -1,0 +1,21 @@
+# Smart Irrigation Advisor – Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Google Cloud Functions framework (runtime)
+functions-framework==3.*
+
+# Google Cloud SDK clients
+google-cloud-bigquery==3.*
+google-cloud-pubsub==2.*
+
+# HTTP requests (NASA POWER API)
+requests==2.*
+
+# Email alerts
+sendgrid==6.*
+
+# ---------------------------------------------------------------------------
+# Development / Testing (not needed in production Cloud Function deployments)
+# ---------------------------------------------------------------------------
+pytest==8.*
+pytest-cov==5.*
