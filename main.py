@@ -495,6 +495,26 @@ def index():
 def static_files(path):
     return send_from_directory("dashboard/public", path)
 
+
+def cloud_function_entry(request):
+    """
+    Adapter to run the entire Flask app inside a Google Cloud Function Gen2.
+    GCP Functions require a pure function as an entry point, not a Flask app object.
+    This safely translates the exact request into our WSGI app context.
+    """
+    from werkzeug.test import run_wsgi_app
+    from flask import Response
+    import io
+
+    body = request.get_data()
+    environ = request.environ.copy()
+    environ['wsgi.input'] = io.BytesIO(body)
+    environ['CONTENT_LENGTH'] = str(len(body))
+    
+    app_iter, status, headers = run_wsgi_app(app, environ, buffered=True)
+    return Response(app_iter, status=status, headers=headers)
+
+
 if __name__ == "__main__":
     initialize()
     print("Starting Flask server on http://127.0.0.1:8000")
