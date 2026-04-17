@@ -15,10 +15,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-# Ensure src/ is on the path when running from the project root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from irrigation_rules import (
+from src.irrigation_rules import (
     UrgencyLevel,
     compute_et0,
     evaluate_irrigation_rules,

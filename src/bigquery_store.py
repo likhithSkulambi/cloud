@@ -47,6 +47,7 @@ LOCATION = os.environ.get("BIGQUERY_LOCATION", "US")
 WEATHER_TABLE_ID = "weather_data"
 RECOMMENDATIONS_TABLE_ID = "irrigation_recommendations"
 FIELD_REGISTRY_TABLE_ID = "field_registry"
+USERS_TABLE_ID = "users"
 
 WEATHER_SCHEMA: list[SchemaField] = [
     SchemaField("record_id", "STRING", mode="REQUIRED", description="UUID for the row"),
@@ -92,6 +93,13 @@ FIELD_REGISTRY_SCHEMA: list[SchemaField] = [
     SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
 ]
 
+USERS_SCHEMA: list[SchemaField] = [
+    SchemaField("user_id", "STRING", mode="REQUIRED"),
+    SchemaField("email", "STRING", mode="REQUIRED"),
+    SchemaField("password_hash", "STRING", mode="REQUIRED"),
+    SchemaField("is_verified", "BOOL", mode="REQUIRED"),
+    SchemaField("created_at", "TIMESTAMP", mode="REQUIRED"),
+]
 
 # ---------------------------------------------------------------------------
 # Client factory
@@ -181,7 +189,11 @@ def initialize_schema(client: bigquery.Client | None = None) -> None:
         FIELD_REGISTRY_TABLE_ID,
         FIELD_REGISTRY_SCHEMA,
     )
-
+    _create_table_if_not_exists(
+        client,
+        USERS_TABLE_ID,
+        USERS_SCHEMA,
+    )
 
 # ---------------------------------------------------------------------------
 # Insert helpers
@@ -336,7 +348,7 @@ def upsert_field(
 # Query helpers
 # ---------------------------------------------------------------------------
 
-def list_active_fields(client: bigquery.Client | None = None) -> list[dict[str, Any]]:
+def list_active_fields(farmer_email: str | None = None, client: bigquery.Client | None = None) -> list[dict[str, Any]]:
     """
     Return all active fields from field_registry (deduplicated, latest row wins).
     """
@@ -352,9 +364,17 @@ def list_active_fields(client: bigquery.Client | None = None) -> list[dict[str, 
             latitude, longitude, area_hectares, active, created_at, updated_at
         FROM ranked
         WHERE rn = 1 AND active = TRUE
-        ORDER BY farm_name, field_id
     """
-    rows = list(client.query(sql).result())
+    
+    params = []
+    if farmer_email:
+        sql += " AND farmer_email = @email"
+        params.append(bigquery.ScalarQueryParameter("email", "STRING", farmer_email))
+        
+    sql += " ORDER BY farm_name, field_id"
+    
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    rows = list(client.query(sql, job_config=job_config).result())
     return [dict(row) for row in rows]
 
 
@@ -459,3 +479,112 @@ def get_dashboard_summary(client: bigquery.Client | None = None) -> dict[str, An
     """
     rows = list(client.query(sql).result())
     return dict(rows[0]) if rows else {}
+
+def get_detailed_field_status(farmer_email: str | None = None, client: bigquery.Client | None = None) -> list[dict[str, Any]]:
+    client = client or get_client()
+    sql = f"""
+        WITH latest_recs AS (
+            SELECT field_id, final_urgency, recommended_water_mm, generated_at,
+                   ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY generated_at DESC) as rn
+            FROM `{PROJECT_ID}.{DATASET_ID}.{RECOMMENDATIONS_TABLE_ID}`
+        ),
+        latest_weather AS (
+            SELECT field_id, T2M, PRECTOTCORR, RH2M, date, ingested_at,
+                   ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY date DESC, ingested_at DESC) as rn
+            FROM `{PROJECT_ID}.{DATASET_ID}.{WEATHER_TABLE_ID}`
+            WHERE T2M IS NOT NULL
+        ),
+        ranked_fields AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY updated_at DESC) as rn
+            FROM `{PROJECT_ID}.{DATASET_ID}.{FIELD_REGISTRY_TABLE_ID}`
+        )
+        SELECT 
+            f.field_id,
+            f.farm_name,
+            f.latitude,
+            f.longitude,
+            f.crop_type,
+            r.final_urgency,
+            r.recommended_water_mm,
+            r.generated_at,
+            w.T2M as temp,
+            w.PRECTOTCORR as rain,
+            w.RH2M as moisture,
+            w.date as weather_date
+        FROM ranked_fields f
+        LEFT JOIN latest_recs r ON f.field_id = r.field_id AND r.rn = 1
+        LEFT JOIN latest_weather w ON f.field_id = w.field_id AND w.rn = 1
+        WHERE f.rn = 1 AND f.active = TRUE
+    """
+    params = []
+    if farmer_email:
+        sql += " AND f.farmer_email = @email"
+        params.append(bigquery.ScalarQueryParameter("email", "STRING", farmer_email))
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    rows = list(client.query(sql, job_config=job_config).result())
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# User Authentication Methods for BigQuery
+# ---------------------------------------------------------------------------
+
+def create_user(email: str, password_hash: str, client: bigquery.Client | None = None) -> str:
+    import uuid
+    client = client or get_client()
+    table_ref = _full_table_id(USERS_TABLE_ID)
+    user_id = str(uuid.uuid4())
+    
+    row = {
+        "user_id": user_id,
+        "email": email,
+        "password_hash": password_hash,
+        "is_verified": False,
+        "created_at": _now_utc(),
+    }
+    errors = client.insert_rows_json(table_ref, [row])
+    if errors:
+        raise RuntimeError(f"BigQuery insert (users) failed: {errors}")
+    return user_id
+
+def get_user_by_email(email: str, client: bigquery.Client | None = None) -> dict[str, Any] | None:
+    client = client or get_client()
+    sql = f"""
+        SELECT *
+        FROM `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
+        WHERE email = @email
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("email", "STRING", email)]
+    )
+    rows = list(client.query(sql, job_config=job_config).result())
+    return dict(rows[0]) if rows else None
+
+def verify_user(email: str, client: bigquery.Client | None = None) -> None:
+    client = client or get_client()
+    sql = f"""
+        UPDATE `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
+        SET is_verified = TRUE
+        WHERE email = @email
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("email", "STRING", email)]
+    )
+    client.query(sql, job_config=job_config).result()
+
+def update_user_password(email: str, password_hash: str, client: bigquery.Client | None = None) -> None:
+    client = client or get_client()
+    sql = f"""
+        UPDATE `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
+        SET password_hash = @password_hash
+        WHERE email = @email
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("password_hash", "STRING", password_hash),
+            bigquery.ScalarQueryParameter("email", "STRING", email)
+        ]
+    )
+    client.query(sql, job_config=job_config).result()

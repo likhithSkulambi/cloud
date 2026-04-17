@@ -10,7 +10,7 @@ from flask_cors import CORS
 from datetime import date, timedelta
 import os
 
-from src.local_store import (
+from src.bigquery_store import (
     initialize_schema,
     list_active_fields,
     insert_weather_records,
@@ -408,6 +408,83 @@ def get_summary_endpoint():
     email = request.args.get("email")
     summary_data = get_dashboard_summary(farmer_email=email)
     return jsonify({"status": "ok", "dashboard_summary": summary_data})
+
+
+@app.route("/api/cron/run", methods=["GET", "POST"])
+def cron_run_endpoint():
+    """
+    Unified endpoint for Cloud Scheduler.
+    1. Fetches NASA weather for all active fields.
+    2. Runs the evaluation engine for all active fields.
+    3. Handles critical alerts automatically.
+    """
+    days = WEATHER_LOOKBACK_DAYS
+    active_fields = list_active_fields()
+    
+    if not active_fields:
+        return jsonify({"status": "ok", "message": "No active fields to process."})
+
+    today = date.today()
+    end_date = today - timedelta(days=1)
+    start_date = end_date - timedelta(days=days - 1)
+    analysis_date = end_date.isoformat()
+    
+    total_weather_inserted = 0
+    errors = []
+    recommendations_out = []
+
+    for field in active_fields:
+        field_id = field["field_id"]
+        lat = field["latitude"]
+        lon = field["longitude"]
+        crop_type = field.get("crop_type", "default")
+        farmer_email = field.get("farmer_email")
+        farm_name = field.get("farm_name", "")
+
+        try:
+            records = fetch_weather_data(lat, lon, start_date, end_date)
+            if records:
+                n = insert_weather_records(field_id, records)
+                total_weather_inserted += n
+            else:
+                errors.append(f"Field {field_id}: no weather records returned")
+                continue
+                
+            recommendation = evaluate_irrigation_rules(
+                field_id=field_id,
+                crop_type=crop_type,
+                weather_records=records,
+                latitude=lat,
+            )
+            
+            rec_id = insert_recommendation(recommendation, analysis_date)
+            
+            alert_result = send_irrigation_alert(
+                recommendation=recommendation,
+                farmer_email=farmer_email,
+                farm_name=farm_name,
+                analysis_date=analysis_date,
+            )
+            
+            recommendations_out.append({
+                "field_id": field_id,
+                "urgency": recommendation.final_urgency.value,
+                "alert": alert_result
+            })
+            
+        except Exception as exc:
+            msg = f"Field {field_id}: {exc}"
+            import logging
+            logging.error(msg)
+            errors.append(msg)
+
+    return jsonify({
+        "status": "ok" if not errors else "partial",
+        "fields_processed": len(active_fields),
+        "weather_inserted": total_weather_inserted,
+        "recommendations": recommendations_out,
+        "errors": errors
+    })
 
 
 @app.route("/")
