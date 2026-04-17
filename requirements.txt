@@ -6,13 +6,15 @@ functions-framework==3.*
 
 # Google Cloud SDK clients
 google-cloud-bigquery==3.*
-google-cloud-pubsub==2.*
 
 # HTTP requests (NASA POWER API)
 requests==2.*
 
-# Email alerts
-sendgrid==6.*
+# Web Framework
+Flask>=3.0.0
+flask-cors>=4.0.0
+Werkzeug>=3.0.0
+itsdangerous>=2.1.2
 
 # ---------------------------------------------------------------------------
 # Development / Testing (not needed in production Cloud Function deployments)
