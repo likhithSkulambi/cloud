@@ -1,6 +1,6 @@
 """
-local_app.py
-------------
+main.py
+-------
 A standalone Flask server that runs the Smart Irrigation Advisor locally.
 It serves a static web dashboard and provides the REST endpoints, bypassing GCP.
 """
@@ -247,8 +247,6 @@ def evaluate_recommendations_endpoint():
             
             rec_id = insert_recommendation(recommendation, analysis_date)
             
-            rec_id = insert_recommendation(recommendation, analysis_date)
-            
             alert_result = False
             if recommendation.final_urgency.value in ["HIGH", "CRITICAL"]:
                 alert_result = send_irrigation_alert(
@@ -268,6 +266,7 @@ def evaluate_recommendations_endpoint():
                 "net_deficit_mm": recommendation.net_water_deficit_mm,
                 "triggered_rules": [r.rule_id for r in recommendation.triggered_rules],
                 "alert": alert_result,
+                "fao_validation": recommendation.fao_validation,
             })
             
         except Exception as exc:
@@ -341,59 +340,269 @@ def send_alert_endpoint():
     if not fields:
         return jsonify({"status": "error", "message": "No fields found for this user"}), 404
 
-    # Build HTML rows for each field
-    rows_html = ""
-    for f in fields:
-        urgency = f.get("final_urgency") or "N/A"
-        water = f"{f['recommended_water_mm']:.1f} mm" if f.get("recommended_water_mm") is not None else "—"
-        moisture = f"{f['moisture']:.1f}%" if f.get("moisture") is not None else "—"
-        color = {"CRITICAL": "#ef4444", "HIGH": "#f97316", "MODERATE": "#eab308", "NONE": "#22c55e"}.get(urgency, "#9ca3af")
-        rows_html += f"""
-        <tr>
-            <td style="padding:8px 12px;border-bottom:1px solid #ddd;">{f.get('farm_name','—')}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #ddd;text-transform:capitalize;">{f.get('crop_type','—')}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #ddd;">{moisture}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #ddd;color:#e74c3c;font-weight:bold;">{water}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #ddd;color:{color};font-weight:bold;">{urgency}</td>
-        </tr>"""
+    URGENCY_BG    = {"CRITICAL": "#7f1d1d", "HIGH": "#7c2d12", "MODERATE": "#713f12", "NONE": "#14532d"}
+    URGENCY_LIGHT = {"CRITICAL": "#fee2e2", "HIGH": "#ffedd5", "MODERATE": "#fef9c3", "NONE": "#dcfce7"}
+    URGENCY_TEXT  = {"CRITICAL": "#ef4444", "HIGH": "#f97316", "MODERATE": "#ca8a04", "NONE": "#16a34a"}
+    URGENCY_EMOJI = {"CRITICAL": "🚨", "HIGH": "⚠️", "MODERATE": "💧", "NONE": "✅"}
+    URGENCY_LABEL = {
+        "CRITICAL": "CRITICAL — Irrigate Immediately",
+        "HIGH":     "HIGH — Irrigate Within 24 Hours",
+        "MODERATE": "MODERATE — Irrigate Within 48 Hours",
+        "NONE":     "NO ACTION — Soil Moisture is Adequate",
+    }
 
-    html_body = f"""
-    <div style="font-family:Arial,sans-serif;max-width:700px;margin:auto;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;">
-        <div style="background-color:#1a2535;padding:24px;color:white;text-align:center;">
-            <h2 style="margin:0;font-size:22px;">🌱 Smart Irrigation — Field Status Alert</h2>
-            <p style="margin:6px 0 0 0;opacity:0.75;font-size:14px;">Summary for {email}</p>
-        </div>
-        <div style="padding:20px;">
-            <p style="color:#333;">Here is the latest irrigation status for all your registered fields:</p>
-            <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:14px;">
-                <thead>
-                    <tr style="background-color:#f0f4f8;">
-                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">Farm</th>
-                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">Crop</th>
-                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">Moisture</th>
-                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">Water Needed</th>
-                        <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">Urgency</th>
-                    </tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-            </table>
-        </div>
-        <div style="background-color:#f8f9fa;padding:15px;text-align:center;font-size:12px;color:#7f8c8d;">
-            Smart Irrigation Advisor — Automated Alert &nbsp;|&nbsp;
-            <a href="http://127.0.0.1:8000/" style="color:#3498db;">View Dashboard</a>
-        </div>
-    </div>"""
+    cards_html = ""
+    summary_counts = {"CRITICAL": 0, "HIGH": 0, "MODERATE": 0, "NONE": 0}
+
+    for idx, f in enumerate(fields):
+        urgency      = (f.get("final_urgency") or "NONE").upper()
+        summary_counts[urgency] = summary_counts.get(urgency, 0) + 1
+        farm_name    = f.get("farm_name") or f"Field {idx + 1}"
+        crop         = (f.get("crop_type") or "Unknown").capitalize()
+        water_mm     = f.get("recommended_water_mm")
+        moisture     = f.get("moisture")
+        temp         = f.get("temp")
+        rain         = f.get("rain")
+        lat          = f.get("latitude")
+        lon          = f.get("longitude")
+
+        water_str    = f"{water_mm:.1f} mm" if water_mm is not None else "—"
+        moisture_str = f"{moisture:.1f}%" if moisture is not None else "—"
+        temp_str     = f"{temp:.1f}°C" if temp is not None else "—"
+        rain_str     = f"{rain:.1f} mm/day" if rain is not None else "—"
+        loc_str      = f"{lat:.4f}°, {lon:.4f}°" if (lat is not None and lon is not None) else "—"
+
+        u_bg    = URGENCY_BG.get(urgency, "#1e293b")
+        u_light = URGENCY_LIGHT.get(urgency, "#f1f5f9")
+        u_text  = URGENCY_TEXT.get(urgency, "#64748b")
+        u_emoji = URGENCY_EMOJI.get(urgency, "💧")
+        u_label = URGENCY_LABEL.get(urgency, urgency)
+
+        if water_mm and water_mm > 0:
+            water_banner = (
+                f'<tr><td colspan="2" style="padding-top:12px;">'
+                f'<table width="100%" cellpadding="0" cellspacing="0">'
+                f'<tr><td style="background-color:{u_light};border-left:4px solid {u_text};'
+                f'border-radius:6px;padding:14px 16px;">'
+                f'<div style="font-size:10px;color:{u_text};font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:0.08em;margin-bottom:6px;">💧 Irrigation Recommendation</div>'
+                f'<div><span style="font-size:26px;font-weight:800;color:{u_text};line-height:1;">'
+                f'{water_str}</span>'
+                f'<span style="font-size:12px;color:#555;margin-left:8px;">of water required</span></div>'
+                f'<div style="font-size:12px;color:#555;margin-top:8px;line-height:1.5;word-break:break-word;">'
+                f'Apply <strong>{water_str}</strong> to restore soil moisture to field capacity. '
+                f'Calculated using FAO-56 water balance with 80%% irrigation efficiency.</div>'
+                f'</td></tr></table></td></tr>'
+            )
+        else:
+            water_banner = (
+                '<tr><td colspan="2" style="padding-top:12px;">'
+                '<table width="100%" cellpadding="0" cellspacing="0">'
+                '<tr><td style="background-color:#dcfce7;border-left:4px solid #16a34a;'
+                'border-radius:6px;padding:14px 16px;">'
+                '<span style="font-size:13px;font-weight:700;color:#15803d;">'
+                '✅ No irrigation needed — soil moisture is adequate.</span>'
+                '</td></tr></table></td></tr>'
+            )
+
+        cards_html += f"""
+        <table width="100%" cellpadding="0" cellspacing="0"
+               style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:10px;
+                      overflow:hidden;border-collapse:separate;">
+          <tr>
+            <td style="background-color:{u_bg};padding:16px 18px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="word-break:break-word;vertical-align:middle;">
+                    <div style="font-size:16px;font-weight:800;color:#ffffff;
+                                word-break:break-word;line-height:1.3;">{u_emoji} {farm_name}</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:3px;">
+                      📍 {loc_str}</div>
+                  </td>
+                  <td style="text-align:right;vertical-align:middle;padding-left:10px;white-space:nowrap;">
+                    <span style="background:rgba(255,255,255,0.2);color:#fff;
+                                 padding:4px 10px;border-radius:20px;font-size:10px;
+                                 font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">
+                      {urgency}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;padding:16px 18px;">
+              <div style="font-size:12px;font-weight:700;color:{u_text};
+                          margin-bottom:14px;word-break:break-word;">{u_label}</div>
+              <table width="100%" cellpadding="0" cellspacing="8">
+                <tr>
+                  <td width="50%" style="vertical-align:top;padding-right:6px;">
+                    <table width="100%" cellpadding="0" cellspacing="0"
+                           style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                      <tr><td style="padding:12px 14px;">
+                        <div style="font-size:9px;color:#94a3b8;font-weight:700;
+                                    text-transform:uppercase;letter-spacing:0.07em;">🌾 Crop</div>
+                        <div style="font-size:15px;font-weight:700;color:#1e293b;
+                                    margin-top:4px;word-break:break-word;">{crop}</div>
+                      </td></tr>
+                    </table>
+                  </td>
+                  <td width="50%" style="vertical-align:top;padding-left:6px;">
+                    <table width="100%" cellpadding="0" cellspacing="0"
+                           style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                      <tr><td style="padding:12px 14px;">
+                        <div style="font-size:9px;color:#94a3b8;font-weight:700;
+                                    text-transform:uppercase;letter-spacing:0.07em;">🌡️ Temperature</div>
+                        <div style="font-size:15px;font-weight:700;color:#1e293b;margin-top:4px;">
+                          {temp_str}</div>
+                      </td></tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td width="50%" style="vertical-align:top;padding-right:6px;padding-top:8px;">
+                    <table width="100%" cellpadding="0" cellspacing="0"
+                           style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                      <tr><td style="padding:12px 14px;">
+                        <div style="font-size:9px;color:#94a3b8;font-weight:700;
+                                    text-transform:uppercase;letter-spacing:0.07em;">🌧️ Rainfall</div>
+                        <div style="font-size:15px;font-weight:700;color:#1e293b;margin-top:4px;">
+                          {rain_str}</div>
+                      </td></tr>
+                    </table>
+                  </td>
+                  <td width="50%" style="vertical-align:top;padding-left:6px;padding-top:8px;">
+                    <table width="100%" cellpadding="0" cellspacing="0"
+                           style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                      <tr><td style="padding:12px 14px;">
+                        <div style="font-size:9px;color:#94a3b8;font-weight:700;
+                                    text-transform:uppercase;letter-spacing:0.07em;">💧 Soil Moisture</div>
+                        <div style="font-size:15px;font-weight:700;color:#1e293b;margin-top:4px;">
+                          {moisture_str}</div>
+                      </td></tr>
+                    </table>
+                  </td>
+                </tr>
+                {water_banner}
+              </table>
+            </td>
+          </tr>
+        </table>"""
+
+    total_n    = len(fields)
+    critical_n = summary_counts.get("CRITICAL", 0)
+    high_n     = summary_counts.get("HIGH", 0)
+    moderate_n = summary_counts.get("MODERATE", 0)
+    none_n     = summary_counts.get("NONE", 0)
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Smart Irrigation Alert</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;
+             font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:20px 0;">
+  <tr><td align="center">
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="max-width:580px;background:#ffffff;border-radius:14px;
+                  overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.10);">
+      <tr>
+        <td style="background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+                   padding:30px 24px;text-align:center;">
+          <div style="font-size:34px;line-height:1;">🌱</div>
+          <h1 style="margin:10px 0 4px 0;font-size:20px;font-weight:800;
+                     color:#ffffff;word-break:break-word;line-height:1.3;">
+            Smart Irrigation — Field Status Alert
+          </h1>
+          <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.55);word-break:break-word;">
+            {email}
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:18px 24px 0 24px;">
+          <p style="margin:0 0 12px 0;font-size:13px;color:#64748b;line-height:1.5;">
+            Latest FAO-56 irrigation analysis for your <strong>{total_n}</strong> registered field(s):
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0"
+                 style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+            <tr>
+              <td width="25%" style="text-align:center;padding:12px 4px;">
+                <div style="font-size:22px;font-weight:800;color:#ef4444;">{critical_n}</div>
+                <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">Critical</div>
+              </td>
+              <td width="25%" style="text-align:center;padding:12px 4px;border-left:1px solid #e2e8f0;">
+                <div style="font-size:22px;font-weight:800;color:#f97316;">{high_n}</div>
+                <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">High</div>
+              </td>
+              <td width="25%" style="text-align:center;padding:12px 4px;border-left:1px solid #e2e8f0;">
+                <div style="font-size:22px;font-weight:800;color:#ca8a04;">{moderate_n}</div>
+                <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">Moderate</div>
+              </td>
+              <td width="25%" style="text-align:center;padding:12px 4px;border-left:1px solid #e2e8f0;">
+                <div style="font-size:22px;font-weight:800;color:#16a34a;">{none_n}</div>
+                <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">No Action</div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:20px 24px 8px 24px;">
+          <p style="margin:0 0 14px 0;font-size:11px;font-weight:700;color:#94a3b8;
+                    text-transform:uppercase;letter-spacing:0.07em;">
+            📋 Per-Field Details &amp; Recommendations
+          </p>
+          {cards_html}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 24px 20px 24px;">
+          <table width="100%" cellpadding="0" cellspacing="0"
+                 style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;">
+            <tr>
+              <td style="padding:12px 14px;font-size:11px;color:#1e40af;
+                         word-break:break-word;line-height:1.6;">
+                <strong>ℹ️ Methodology:</strong> FAO-56 Penman-Monteith ET₀ &middot;
+                NASA POWER 7-day data &middot; FAO CLIMWAT 2.0 cross-validation &middot;
+                80%% irrigation efficiency assumed.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="background:#f8fafc;border-top:1px solid #e2e8f0;
+                   padding:16px 24px;text-align:center;">
+          <p style="margin:0 0 6px 0;font-size:11px;color:#94a3b8;word-break:break-word;">
+            Smart Irrigation Advisor &mdash; Automated Alert System
+          </p>
+          <a href="http://127.0.0.1:8000/"
+             style="font-size:12px;color:#3b82f6;text-decoration:none;font-weight:700;">
+            View Live Dashboard &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>"""
 
     from src.email_service import send_email
-    ok = send_email(email, "🌱 Field Status Alert — Smart Irrigation", html_body)
+    ok = send_email(email, "🌱 Field Status Alert — Smart Irrigation Advisor", html_body)
     if ok:
-        critical_count = sum(1 for f in fields if (f.get("final_urgency") or "") in ("CRITICAL","HIGH"))
-        msg = f"Alert email dispatched for {len(fields)} field(s)."
-        if critical_count:
-            msg += f" {critical_count} field(s) require urgent irrigation!"
+        urgent_count = summary_counts.get("CRITICAL", 0) + summary_counts.get("HIGH", 0)
+        msg = f"Alert email dispatched for {total_n} field(s)."
+        if urgent_count:
+            msg += f" {urgent_count} field(s) require urgent irrigation!"
         return jsonify({"status": "ok", "message": msg})
     else:
         return jsonify({"status": "error", "message": "Failed to send email. Check SMTP config."}), 500
+
 
 @app.route("/api/recommendations", methods=["GET"])
 def get_recommendations_endpoint():

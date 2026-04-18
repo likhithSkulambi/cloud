@@ -1,30 +1,124 @@
 # Running the Smart Irrigation Advisor Locally
 
-We have refactored the application to run entirely on your local machine, completely bypassing Google Cloud (BigQuery, Pub/Sub, Cloud Functions). This allows you to track fields and get recommendations using an embedded SQLite database and a local web dashboard.
+The app runs as a **Flask server** on your machine using a local **SQLite database**,
+completely bypassing Google Cloud. No GCP account or billing needed.
 
 ## Prerequisites
 
-1. Active Python Virtual Environment (`.venv\Scripts\Activate.ps1` in PowerShell)
-2. Installed dependencies: `pip install -r requirements.txt fastapi uvicorn pydantic`
+- Python 3.10+ installed
+- PowerShell terminal (Windows)
 
-## Starting the Dashboard
+---
 
-Run the following command in the project root:
+## Step 1 — Activate the Virtual Environment
 
 ```powershell
-python local_app.py
+cd D:\Smart-Irrigation-Advisor
+.venv\Scripts\Activate.ps1
 ```
 
-## Using the Dashboard
+> If you get a script execution error, run this first:
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+> ```
 
-1. Open a browser and navigate to **http://127.0.0.1:8000/**.
-2. The dashboard comes pre-loaded with **two demo fields**.
-3. **Step 1:** Click **"Fetch Weather"** in the top right to download 7 days of NASA POWER data for the demo fields.
-4. **Step 2:** Click **"Run Engine"** to process the weather data through the FAO-56 irrigation rules and generate recommendations.
-5. The dashboard cards will automatically update, and you can see the results in the table below. (Use the dropdown to filter by urgency).
+---
 
-## How it works (Local Mode)
+## Step 2 — Install Dependencies
 
-* **Database (`local_store.py`)**: Stores fields, weather data, and recommendations in a local `smart_irrigation.db` SQLite database instead of BigQuery.
-* **Alerts (`local_alerts.py`)**: Replaces Pub/Sub and SendGrid emails with local console tracking. Check the terminal where you ran `python local_app.py` for alert outputs.
-* **Server (`local_app.py`)**: A FastAPI server that exposes identical REST endpoints to the Google Cloud Functions payload and also serves the modern UI front-end located at `dashboard/public/index.html`.
+```powershell
+pip install -r requirements.txt
+```
+
+> Local-only extra packages (if missing):
+> ```powershell
+> pip install werkzeug flask flask-cors itsdangerous
+> ```
+
+---
+
+## Step 3 — Set Up the `.env` File
+
+Make sure `D:\Smart-Irrigation-Advisor\.env` exists and contains:
+
+```env
+JWT_SECRET_KEY=super_secret_jwt_key_here
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_EMAIL=your_gmail@gmail.com
+SMTP_APP_PASSWORD=your_gmail_app_password
+FRONTEND_URL=http://127.0.0.1:8000
+```
+
+> For email alerts to work, you need a **Gmail App Password**:
+> Google Account → Security → 2-Step Verification → App Passwords
+
+---
+
+## Step 4 — Start the Server
+
+```powershell
+python main.py
+```
+
+You should see:
+```
+Starting Flask server on http://127.0.0.1:8000
+```
+
+---
+
+## Step 5 — Open the Dashboard
+
+Open your browser and go to:
+
+**http://127.0.0.1:8000/**
+
+---
+
+## Step 6 — Use the Dashboard
+
+| Step | Button | What it does |
+|------|--------|-------------|
+| 1 | **Register / Log In** | Create an account (auto-verified in dev mode) |
+| 2 | **Add Field** | Register your farm (crop type, soil, lat/lon, area) |
+| 3 | **Fetch Weather** | Downloads 7 days of NASA POWER data for your fields |
+| 4 | **Run Engine** | Runs FAO-56 rule engine → generates irrigation recommendations |
+| 5 | **Send Alert** | Emails a per-field report to your registered address |
+
+Demo fields are auto-created on first launch if you have no fields registered.
+
+---
+
+## API Endpoints (manually accessible)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /` | GET | Dashboard UI |
+| `GET /api/weather/fetch` | GET | Fetch NASA POWER data |
+| `GET /api/recommendations/evaluate` | GET | Run irrigation engine |
+| `GET /api/recommendations` | GET | List recommendations |
+| `GET /api/summary` | GET | Dashboard summary counts |
+| `GET /api/fields` | GET | List your fields |
+| `POST /api/fields/add` | POST | Add a new field |
+| `GET /api/alerts/send?email=X` | GET | Send email alert |
+| `GET /api/cron/run` | GET | Full pipeline (fetch + evaluate + alert) |
+
+---
+
+## Local Data Storage
+
+All data is stored in **`smart_irrigation.db`** (SQLite) in the project root.
+Delete this file to reset all data.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `ModuleNotFoundError` | Run `pip install -r requirements.txt` |
+| Port 8000 already in use | Kill the old process or change port in `main.py` line 521 |
+| Script execution policy error | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| Email not sending | Check `.env` SMTP settings and Gmail App Password |
+| No weather data | Check internet connection (NASA POWER API) |

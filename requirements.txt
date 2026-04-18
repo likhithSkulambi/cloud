@@ -6,6 +6,10 @@ functions-framework==3.*
 
 # Google Cloud SDK clients
 google-cloud-bigquery==3.*
+google-cloud-pubsub==2.*
+
+# Email alerts
+sendgrid==6.*
 
 # HTTP requests (NASA POWER API)
 requests==2.*

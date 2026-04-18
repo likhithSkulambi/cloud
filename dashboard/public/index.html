@@ -150,6 +150,53 @@
             </div>
         </section>
 
+        <!-- FAO CLIMWAT Data Quality Panel -->
+        <section id="fao-section" class="hidden">
+            <h2 class="text-lg font-semibold mb-4 text-gray-300 flex items-center gap-2">
+                <span>🌍</span> FAO CLIMWAT 2.0 Data Quality Validation
+            </h2>
+            <div class="glass-card rounded-xl p-6 shadow-2xl">
+                <!-- Header row -->
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-widest mb-1">Reference Dataset</p>
+                        <p class="text-sm text-gray-300">
+                            FAO Irrigation & Drainage Paper No. 49 · CLIMWAT 2.0
+                            — Cross-validating NASA POWER ET₀ against monthly FAO reference values
+                        </p>
+                    </div>
+                    <span id="fao-quality-badge" class="px-4 py-1.5 rounded-full text-sm font-bold border text-gray-400 border-gray-700">
+                        Not Run
+                    </span>
+                </div>
+
+                <!-- Station info -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" id="fao-station-cards">
+                    <!-- Injected by JS -->
+                </div>
+
+                <!-- Monthly ET₀ comparison chart (text-based) -->
+                <div id="fao-monthly-table" class="hidden">
+                    <p class="text-xs uppercase tracking-widest text-gray-500 mb-3">Monthly ET₀ Comparison</p>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                            <thead>
+                                <tr class="text-gray-500 border-b border-gray-800">
+                                    <th class="py-2 pr-4">Month</th>
+                                    <th class="py-2 pr-4">FAO Ref (mm/day)</th>
+                                    <th class="py-2 pr-4">Computed (mm/day)</th>
+                                    <th class="py-2 pr-4">Deviation</th>
+                                    <th class="py-2">Quality</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fao-monthly-tbody" class="divide-y divide-gray-800/50">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
     </main>
 
     <!-- Add Field Modal -->
@@ -930,8 +977,13 @@
                 const res = await authenticatedFetch(url);
                 const data = await res.json();
                 if (data.status === 'ok' || data.status === 'partial') {
-                    alert(`Evaluation complete! Generated recommendations for ${data.recommendations?.length || 0} fields.`);
-                    // Refresh UI
+                    const recs = data.recommendations || [];
+                    alert(`Evaluation complete! Generated recommendations for ${recs.length} field(s).`);
+
+                    // Render FAO CLIMWAT panel from first rec that has validation data
+                    const recWithFao = recs.find(r => r.fao_validation && r.fao_validation.nearest_station);
+                    if (recWithFao) renderFaoPanel(recWithFao.fao_validation);
+
                     fetchSummary();
                     loadRecommendations();
                 } else {
@@ -945,6 +997,80 @@
                 btn.disabled = false;
             }
         }
+
+        function renderFaoPanel(fao) {
+            const section = document.getElementById('fao-section');
+            if (!fao || !fao.nearest_station) return;
+            section.classList.remove('hidden');
+
+            // Quality badge
+            const badge = document.getElementById('fao-quality-badge');
+            const qColors = {
+                GOOD:     'bg-green-900/40 text-green-400 border-green-700',
+                WARNING:  'bg-yellow-900/40 text-yellow-400 border-yellow-700',
+                CRITICAL: 'bg-red-900/40 text-red-400 border-red-700',
+            };
+            const qIcons = { GOOD: '✅', WARNING: '⚠️', CRITICAL: '🚨' };
+            const q = fao.data_quality_overall || 'GOOD';
+            badge.className = `px-4 py-1.5 rounded-full text-sm font-bold border ${qColors[q] || qColors.GOOD}`;
+            badge.textContent = `${qIcons[q] || '✅'} ${q}`;
+
+            // Station cards
+            document.getElementById('fao-station-cards').innerHTML = `
+                <div class="bg-white/5 rounded-lg p-4 border border-gray-800">
+                    <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">📍 Nearest FAO Station</p>
+                    <p class="text-white font-semibold">${fao.nearest_station}</p>
+                    <p class="text-gray-400 text-sm">${fao.station_country || ''}</p>
+                    <p class="text-gray-500 text-xs mt-1">${fao.distance_km} km away · ID: ${fao.station_id || 'N/A'}</p>
+                </div>
+                <div class="bg-white/5 rounded-lg p-4 border border-gray-800">
+                    <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">🌿 ET₀ Comparison</p>
+                    <div class="flex items-end gap-3">
+                        <div>
+                            <p class="text-2xl font-bold text-white">${fao.avg_computed_eto_mm}</p>
+                            <p class="text-xs text-gray-400">NASA POWER (computed)</p>
+                        </div>
+                        <div class="text-gray-600">vs</div>
+                        <div>
+                            <p class="text-2xl font-bold text-blue-400">${fao.avg_fao_reference_eto_mm}</p>
+                            <p class="text-xs text-gray-400">FAO CLIMWAT (reference)</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-white/5 rounded-lg p-4 border border-gray-800">
+                    <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">📊 Deviation</p>
+                    <p class="text-2xl font-bold ${q === 'GOOD' ? 'text-green-400' : q === 'WARNING' ? 'text-yellow-400' : 'text-red-400'}">${fao.avg_deviation_pct}%</p>
+                    <p class="text-xs text-gray-500 mt-1">
+                        ${q === 'GOOD' ? 'Within acceptable range (< 30%)' :
+                          q === 'WARNING' ? 'Moderate deviation (30–60%) — verify data' :
+                          'High deviation (> 60%) — check inputs'}
+                    </p>
+                </div>
+            `;
+
+            // Monthly table
+            const monthly = fao.monthly_validations || [];
+            if (monthly.length > 0) {
+                const qRow = { GOOD: 'text-green-400', WARNING: 'text-yellow-400', CRITICAL: 'text-red-400' };
+                document.getElementById('fao-monthly-tbody').innerHTML = monthly.map(m => `
+                    <tr class="hover:bg-white/5">
+                        <td class="py-2 pr-4 text-gray-300">${m.month_name}</td>
+                        <td class="py-2 pr-4 text-blue-400 font-mono">${m.fao_reference_eto_mm}</td>
+                        <td class="py-2 pr-4 text-white font-mono">${m.avg_computed_eto_mm}</td>
+                        <td class="py-2 pr-4 font-mono ${qRow[m.data_quality] || ''}">${m.deviation_pct}%</td>
+                        <td class="py-2">
+                            <span class="px-2 py-0.5 rounded text-xs font-bold ${
+                                m.data_quality === 'GOOD' ? 'bg-green-900/40 text-green-400' :
+                                m.data_quality === 'WARNING' ? 'bg-yellow-900/40 text-yellow-400' :
+                                'bg-red-900/40 text-red-400'
+                            }">${m.data_quality}</span>
+                        </td>
+                    </tr>
+                `).join('');
+                document.getElementById('fao-monthly-table').classList.remove('hidden');
+            }
+        }
+
 
         // Init
         document.addEventListener("DOMContentLoaded", () => {

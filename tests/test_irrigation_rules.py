@@ -23,7 +23,6 @@ from src.irrigation_rules import (
     compute_recommended_water,
     _rule_consecutive_dry_days,
     _rule_heavy_recent_rainfall,
-    _rule_cumulative_et0_vs_crop_need,
     _rule_low_humidity_stress,
     _rule_high_wind_speed,
     _rule_high_et0_low_rain,

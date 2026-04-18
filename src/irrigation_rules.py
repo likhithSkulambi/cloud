@@ -34,6 +34,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# FAO CLIMWAT 2.0 reference dataset — imported lazily to avoid hard dependency
+try:
+    from fao_climwat import get_fao_validation_summary
+    _FAO_AVAILABLE = True
+except ImportError:
+    try:
+        from src.fao_climwat import get_fao_validation_summary
+        _FAO_AVAILABLE = True
+    except ImportError:
+        _FAO_AVAILABLE = False
+        logger.warning("fao_climwat module not found; FAO validation disabled")
+
 
 # ---------------------------------------------------------------------------
 # Enumerations & Data Classes
@@ -77,6 +89,7 @@ class IrrigationRecommendation:
     all_rules: list[RuleResult]
     summary: str
     simulated_moisture_percent: float = 50.0
+    fao_validation: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -542,11 +555,52 @@ def evaluate_irrigation_rules(
         # Recommend enough water to refill exactly the current depletion back to Field Capacity
         recommended_water = compute_recommended_water(dr, application_efficiency)
 
+    # ---------------------------------------------------------------------------
+    # FAO CLIMWAT cross-validation
+    # ---------------------------------------------------------------------------
+    fao_validation: dict[str, Any] = {}
+    if _FAO_AVAILABLE:
+        try:
+            fao_validation = get_fao_validation_summary(
+                latitude=latitude,
+                longitude=weather_records[0].get("longitude", 0.0),
+                weather_records=weather_records,
+                et0_values=et0_values,
+            )
+            fao_quality = fao_validation.get("data_quality_overall", "GOOD")
+            fao_station = fao_validation.get("nearest_station", "")
+            fao_dist = fao_validation.get("distance_km", 0)
+            fao_ref_eto = fao_validation.get("avg_fao_reference_eto_mm", 0)
+            logger.info(
+                "FAO CLIMWAT validation: quality=%s, nearest=%s (%.0f km), "
+                "FAO ref ET₀=%.2f mm/day, computed=%.2f mm/day",
+                fao_quality, fao_station, fao_dist,
+                fao_ref_eto,
+                cumulative_et0 / max(len(et0_values), 1),
+            )
+        except Exception as exc:
+            logger.warning("FAO CLIMWAT validation failed: %s", exc)
+            fao_validation = {"error": str(exc)}
+
     triggered_names = ", ".join(f"Rule {r.rule_id}" for r in triggered) or "None"
+    # Build summary — include FAO quality flag if available
+    fao_note = ""
+    if fao_validation and "data_quality_overall" in fao_validation:
+        q = fao_validation["data_quality_overall"]
+        ref = fao_validation.get("avg_fao_reference_eto_mm", 0)
+        dev = fao_validation.get("avg_deviation_pct", 0)
+        station = fao_validation.get("nearest_station", "")
+        fao_note = (
+            f" FAO CLIMWAT validation: {q} "
+            f"(ref ET₀={ref:.2f} mm/day, deviation={dev:.1f}%, "
+            f"nearest station: {station})."
+        )
+
     summary = (
         f"Field '{field_id}' ({crop_type}): urgency={final_urgency.value}, "
         f"recommend {recommended_water:.1f} mm irrigation. "
         f"Depletion: {dr:.1f} mm / TAW {taw:.1f} mm."
+        f"{fao_note}"
     )
 
     logger.info(summary)
@@ -563,4 +617,5 @@ def evaluate_irrigation_rules(
         all_rules=rule_results,
         summary=summary,
         simulated_moisture_percent=simulated_moisture_percent,
+        fao_validation=fao_validation,
     )
