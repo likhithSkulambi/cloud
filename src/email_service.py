@@ -56,8 +56,9 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
         logger.error(f"Failed to send email to {to_email}: {e}")
         return False
 
-def send_verification_email(to_email: str, token: str):
-    base_url = os.environ.get("FRONTEND_URL", "http://127.0.0.1:8000")
+def send_verification_email(to_email: str, token: str, base_url: str = None):
+    if not base_url:
+        base_url = os.environ.get("FRONTEND_URL", "http://127.0.0.1:8000")
     verify_link = f"{base_url}/api/auth/verify?token={token}"
     
     html = f"""
@@ -72,8 +73,9 @@ def send_verification_email(to_email: str, token: str):
     """
     return send_email(to_email, "Verify Your Account - Smart Irrigation", html)
 
-def send_reset_email(to_email: str, token: str):
-    base_url = os.environ.get("FRONTEND_URL", "http://127.0.0.1:8000")
+def send_reset_email(to_email: str, token: str, base_url: str = None):
+    if not base_url:
+        base_url = os.environ.get("FRONTEND_URL", "http://127.0.0.1:8000")
     reset_link = f"{base_url}/?reset_token={token}"
     
     html = f"""
@@ -88,7 +90,40 @@ def send_reset_email(to_email: str, token: str):
     """
     return send_email(to_email, "Password Reset - Smart Irrigation", html)
 
-def send_irrigation_alert(to_email: str, farm_name: str, crop_type: str, recommendation: float, moisture: float, action: str):
+def send_irrigation_alert(to_email: str = None, farm_name: str = "", crop_type: str = "", 
+                         recommendation: float = None, moisture: float = None, action: str = "",
+                         # Cloud-style parameters for compatibility
+                         farmer_email: str = None, analysis_date: str = None):
+    """
+    Send an irrigation alert email.
+    
+    Supports both signatures:
+    1. Legacy SMTP: to_email, farm_name, crop_type, recommendation(mm), moisture(%), action
+    2. Cloud-style: farmer_email, farm_name, recommendation(dataclass), analysis_date
+    """
+    # Handle cloud-style calling convention
+    if farmer_email and to_email is None:
+        to_email = farmer_email
+    
+    # If recommendation is a dataclass (cloud-style), extract fields
+    if recommendation and hasattr(recommendation, 'crop_type'):
+        # Cloud-style IrrigationRecommendation dataclass
+        rec_obj = recommendation
+        if not crop_type:
+            crop_type = rec_obj.crop_type
+        if not moisture:
+            moisture = rec_obj.simulated_moisture_percent
+        if not action:
+            action = rec_obj.final_urgency.value
+        rec_mm = rec_obj.recommended_water_mm
+    else:
+        # Legacy style - float recommendation
+        rec_mm = recommendation
+    
+    if not to_email:
+        logger.warning("send_irrigation_alert: no email address provided")
+        return False
+    
     html = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
         <div style="background-color: #2c3e50; padding: 20px; color: white; text-align: center;">
@@ -99,13 +134,14 @@ def send_irrigation_alert(to_email: str, farm_name: str, crop_type: str, recomme
             <p>Your crop requires attention today based on our latest FAO-56 soil moisture analysis.</p>
             <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
                 <tr><td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Crop:</strong></td><td style="padding: 8px 0; border-bottom: 1px solid #eee; text-transform: capitalize;">{crop_type}</td></tr>
-                <tr><td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Water Required:</strong></td><td style="padding: 8px 0; border-bottom: 1px solid #eee; color: #e74c3c; font-weight: bold;">{recommendation:.1f} mm</td></tr>
+                <tr><td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Water Required:</strong></td><td style="padding: 8px 0; border-bottom: 1px solid #eee; color: #e74c3c; font-weight: bold;">{rec_mm:.1f} mm</td></tr>
                 <tr><td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Soil Moisture:</strong></td><td style="padding: 8px 0; border-bottom: 1px solid #eee;">{moisture:.1f}%</td></tr>
                 <tr><td style="padding: 8px 0;"><strong>Recommended Action:</strong></td><td style="padding: 8px 0; color: #4CAF50; font-weight: bold;">{action}</td></tr>
             </table>
         </div>
         <div style="background-color: #f8f9fa; padding: 15px; text-align: center; font-size: 12px; color: #7f8c8d;">
             Smart Irrigation Advisor Automated Alert System<br>
+            {f"Analysis Date: {analysis_date}<br>" if analysis_date else ""}
             <a href="http://127.0.0.1:8000/" style="color: #3498db;">View full dashboard</a>
         </div>
     </div>

@@ -19,6 +19,7 @@ Flask>=3.0.0
 flask-cors>=4.0.0
 Werkzeug>=3.0.0
 itsdangerous>=2.1.2
+gunicorn>=21.0.0
 
 # ---------------------------------------------------------------------------
 # Development / Testing (not needed in production Cloud Function deployments)

@@ -83,28 +83,20 @@ def _date_str(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
-def _parse_power_response(raw: dict[str, Any]) -> list[dict[str, Any]]:
+def _parse_power_response(raw: dict[str, Any], req_lat: float = 0.0, req_lon: float = 0.0) -> list[dict[str, Any]]:
     """
     Parse the NASA POWER JSON response and return a list of daily records.
-
-    Each record is a dict with keys:
-        date              – ISO date string (YYYY-MM-DD)
-        latitude          – float
-        longitude         – float
-        T2M_MAX           – float
-        T2M_MIN           – float
-        T2M               – float
-        RH2M              – float
-        WS2M              – float
-        ALLSKY_SFC_SW_DWN – float
-        PRECTOTCORR       – float
+    ...
     """
     try:
         properties = raw["properties"]
         parameter_data: dict[str, dict] = properties["parameter"]
         header = raw.get("header", {})
+        # If header coords are 0.0 (default), use requested coords instead
         lat = header.get("latitude", 0.0)
         lon = header.get("longitude", 0.0)
+        if lat == 0.0 and lon == 0.0 and (req_lat != 0.0 or req_lon != 0.0):
+            lat, lon = req_lat, req_lon
     except KeyError as exc:
         raise ValueError(f"Unexpected NASA POWER response structure: {exc}") from exc
 
@@ -203,7 +195,7 @@ def fetch_weather_data(
     response.raise_for_status()
 
     raw = response.json()
-    records = _parse_power_response(raw)
+    records = _parse_power_response(raw, req_lat=latitude, req_lon=longitude)
 
     logger.info("Retrieved %d daily records from NASA POWER", len(records))
     return records

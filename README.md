@@ -129,6 +129,16 @@ chmod +x deployment/deploy.sh
 ./deployment/deploy.sh
 ```
 
+On Windows, use the PowerShell deployment script instead:
+
+```powershell
+Set-Location D:\Smart-Irrigation-Advisor
+.\deployment\deploy.ps1
+```
+
+The PowerShell script reads GCP settings from `config/.env` or environment variables,
+creates the BigQuery dataset and Pub/Sub topic, then deploys the three Cloud Functions.
+
 ### 5. Test the REST API
 
 ```bash

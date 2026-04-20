@@ -1,0 +1,12 @@
+# Cloud Functions runtime dependencies for Smart Irrigation Advisor.
+# Keep this file aligned with the runtime packages in the root requirements.txt.
+
+functions-framework==3.*
+google-cloud-bigquery==3.*
+google-cloud-pubsub==2.*
+sendgrid==6.*
+requests==2.*
+Flask>=3.0.0
+flask-cors>=4.0.0
+Werkzeug>=3.0.0
+itsdangerous>=2.1.2

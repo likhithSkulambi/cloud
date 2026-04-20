@@ -118,6 +118,19 @@ def get_kc(crop_type: str) -> float:
     """Return the Kc coefficient for the given crop type."""
     return CROP_KC.get(crop_type.lower(), CROP_KC["default"])
 
+CROP_OPTIMAL_RANGES = {
+    "wheat": {"t_min": 15, "t_max": 25, "m_min": 60, "m_max": 80},
+    "maize": {"t_min": 20, "t_max": 30, "m_min": 50, "m_max": 70},
+    "rice": {"t_min": 22, "t_max": 32, "m_min": 80, "m_max": 100},
+    "sugarcane": {"t_min": 25, "t_max": 30, "m_min": 70, "m_max": 85},
+    "cotton": {"t_min": 20, "t_max": 30, "m_min": 50, "m_max": 65},
+    "tomato": {"t_min": 18, "t_max": 27, "m_min": 60, "m_max": 70},
+    "potato": {"t_min": 15, "t_max": 20, "m_min": 65, "m_max": 80},
+    "sunflower": {"t_min": 20, "t_max": 25, "m_min": 50, "m_max": 60},
+    "soybean": {"t_min": 20, "t_max": 30, "m_min": 60, "m_max": 70},
+    "default": {"t_min": 18, "t_max": 28, "m_min": 50, "m_max": 70},
+}
+
 SOIL_PROPERTIES = {
     "sandy": {"fc": 0.10, "pwp": 0.04}, # Drains quickly
     "loam":  {"fc": 0.25, "pwp": 0.12}, # Balanced
@@ -426,6 +439,55 @@ def _rule_heavy_recent_rainfall(
     )
 
 
+def _rule_crop_optimal_conditions(
+    crop_type: str,
+    temp: float,
+    moisture: float,
+) -> RuleResult:
+    """
+    Rule 7 – Compares field temperature and moisture to optimal crop thresholds.
+    """
+    opt = CROP_OPTIMAL_RANGES.get(crop_type.lower(), CROP_OPTIMAL_RANGES["default"])
+    
+    t_min, t_max = opt["t_min"], opt["t_max"]
+    m_min, m_max = opt["m_min"], opt["m_max"]
+
+
+    dt_high = max(0, temp - t_max)
+    dt_low = max(0, t_min - temp)
+    dm_high = max(0, moisture - m_max)
+    dm_low = max(0, m_min - moisture)
+
+    dt_max_dev = max(dt_high, dt_low)
+    dm_max_dev = max(dm_high, dm_low)
+
+    triggered = False
+    urgency = UrgencyLevel.NONE
+    reason = f"Conditions optimal (Temp/Moisture within physiological range for {crop_type})"
+
+    if dt_max_dev > 5.0 or dm_max_dev > 15.0:
+        triggered = True
+        urgency = UrgencyLevel.CRITICAL
+        reason = f"CRITICAL: Conditions severely out of bounds for {crop_type} (Temp dev: {dt_max_dev:.1f}°C, Moist dev: {dm_max_dev:.1f}%)"
+    elif dt_max_dev > 2.0 or dm_max_dev > 5.0:
+        triggered = True
+        urgency = UrgencyLevel.HIGH
+        reason = f"HIGH: Conditions moderately out of bounds for {crop_type} (Temp dev: {dt_max_dev:.1f}°C, Moist dev: {dm_max_dev:.1f}%)"
+    elif dt_max_dev > 0.0 or dm_max_dev > 0.0:
+        triggered = True
+        urgency = UrgencyLevel.MODERATE
+        reason = f"MODERATE: Conditions slightly sub-optimal for {crop_type}"
+
+    return RuleResult(
+        rule_id=7,
+        rule_name="Crop Optimal Constraints",
+        triggered=triggered,
+        urgency=urgency,
+        reason=reason,
+        details={"temp": temp, "moisture": moisture, "optimal": opt},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Recommended water amount calculation
 # ---------------------------------------------------------------------------
@@ -489,9 +551,9 @@ def evaluate_irrigation_rules(
     for rec in weather_records:
         try:
             from datetime import date as _date
-            rec_date = _date.fromisoformat(rec["date"])
+            rec_date = _date.fromisoformat(str(rec["date"])[:10])
             doy = rec_date.timetuple().tm_yday
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             doy = 180
 
         et0 = compute_et0(
@@ -520,8 +582,14 @@ def evaluate_irrigation_rules(
     cumulative_et0 = sum(et0_values)
     cumulative_rain = sum((r.get("PRECTOTCORR") or 0.0) for r in weather_records)
     
-    # Calculate simulated soil moisture as volumetric percentage
-    simulated_moisture_percent = round((fc - (dr / zr)) * 100, 1)
+    # Calculate simulated soil moisture as relative available water capacity percentage
+    # (Current - PWP) / (FC - PWP) * 100
+    if (fc - pwp) > 0:
+        moisture_fraction = ( (fc - (dr / zr)) - pwp ) / (fc - pwp)
+        simulated_moisture_percent = round(max(0, min(100, moisture_fraction * 100)), 1)
+    else:
+        simulated_moisture_percent = 50.0
+
 
     latest = weather_records[-1]
     latest_et0 = et0_values[-1]
@@ -533,6 +601,7 @@ def evaluate_irrigation_rules(
         _rule_low_humidity_stress(latest),
         _rule_high_wind_speed(latest, latest_et0),
         _rule_heavy_recent_rainfall(weather_records),
+        _rule_crop_optimal_conditions(crop_type, latest.get("T2M") or 25.0, simulated_moisture_percent)
     ]
 
     rule6 = rule_results[5]
@@ -548,6 +617,7 @@ def evaluate_irrigation_rules(
         final_urgency = UrgencyLevel.NONE
     else:
         final_urgency = max(triggered, key=lambda r: r.urgency.numeric()).urgency
+
 
     if final_urgency == UrgencyLevel.NONE:
         recommended_water = 0.0

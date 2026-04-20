@@ -6,9 +6,9 @@ Smart Irrigation Advisor.
 
 Tables managed
 --------------
-    weather_data          – Raw daily NASA POWER records
-    irrigation_recommendations  – Rule engine outputs
-    field_registry        – Farm/field metadata
+    weather_data          - Raw daily NASA POWER records
+    irrigation_recommendations  - Rule engine outputs
+    field_registry        - Farm/field metadata
 
 Schema conventions
 ------------------
@@ -87,8 +87,40 @@ def _local_initialize_schema():
             fao_data_quality TEXT,
             fao_nearest_station TEXT,
             fao_reference_eto_mm REAL,
-            fao_deviation_pct REAL
+            fao_deviation_pct REAL,
+            simulated_moisture_percent REAL
         );
+    """)
+
+    # Migration: Cleanup duplicates in weather_data (if any) to allow UNIQUE constraint/index
+    try:
+        c.execute("""
+            DELETE FROM weather_data 
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid) 
+                FROM weather_data 
+                GROUP BY field_id, date
+            )
+        """)
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_weather_unique ON weather_data (field_id, date)")
+    except Exception as e:
+        logger.warning("Migration failed (weather_data cleanup): %s", e)
+
+    # Migration: Add missing columns if table already existed without them
+    cols = [info[1] for info in c.execute("PRAGMA table_info(irrigation_recommendations)").fetchall()]
+    missing_cols = [
+        ("fao_validation", "TEXT"), ("fao_data_quality", "TEXT"), 
+        ("fao_nearest_station", "TEXT"), ("fao_reference_eto_mm", "REAL"), 
+        ("fao_deviation_pct", "REAL"), ("simulated_moisture_percent", "REAL")
+    ]
+    for col_name, col_type in missing_cols:
+        if col_name not in cols:
+            try:
+                c.execute(f"ALTER TABLE irrigation_recommendations ADD COLUMN {col_name} {col_type}")
+            except Exception as e:
+                logger.warning(f"Failed to add column {col_name}: {e}")
+
+    c.executescript("""
         CREATE TABLE IF NOT EXISTS field_registry (
             field_id TEXT PRIMARY KEY,
             farm_name TEXT,
@@ -171,7 +203,7 @@ def _local_insert_weather_records(field_id: str, records: list[dict]) -> int:
         rid = str(_uuid_mod.uuid4())
         try:
             c.execute("""
-                INSERT OR IGNORE INTO weather_data
+                INSERT OR REPLACE INTO weather_data
                     (record_id, field_id, date, ingested_at, latitude, longitude,
                      T2M_MAX, T2M_MIN, T2M, RH2M, WS2M, ALLSKY_SFC_SW_DWN, PRECTOTCORR)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -321,16 +353,48 @@ def _local_get_detailed_field_status(farmer_email=None):
     result = []
     for f in fields:
         fid = f["field_id"]
+
+        # Latest recommendation
         c.execute("""
             SELECT * FROM irrigation_recommendations
             WHERE field_id=? ORDER BY generated_at DESC LIMIT 1
         """, (fid,))
         rec = c.fetchone()
+
+        # 7-day weather: prioritize non-null records to avoid "empty positions" on dashboard
         c.execute("""
-            SELECT T2M, RH2M, PRECTOTCORR FROM weather_data
-            WHERE field_id=? ORDER BY date DESC LIMIT 1
+            SELECT AVG(T2M) as T2M, AVG(RH2M) as RH2M, AVG(PRECTOTCORR) as PRECTOTCORR
+            FROM (
+                SELECT T2M, RH2M, PRECTOTCORR 
+                FROM weather_data
+                WHERE field_id=? AND T2M IS NOT NULL
+                ORDER BY date DESC LIMIT 7
+            )
         """, (fid,))
         wx = c.fetchone()
+
+        # Fallback: if most recent 7 days are ALL null, try any latest data within 14 days
+        if not wx or wx["T2M"] is None:
+            c.execute("""
+                SELECT AVG(T2M) as T2M, AVG(RH2M) as RH2M, AVG(PRECTOTCORR) as PRECTOTCORR
+                FROM (
+                    SELECT T2M, RH2M, PRECTOTCORR 
+                    FROM weather_data
+                    WHERE field_id=? AND T2M IS NOT NULL
+                    ORDER BY date DESC LIMIT 14
+                )
+            """, (fid,))
+            wx = c.fetchone()
+
+        # Derive meaningful values: prefer DB weather, fall back to recommendation totals
+        temp_val     = wx["T2M"] if wx and wx["T2M"] is not None else None
+        rain_val     = wx["PRECTOTCORR"] if wx and wx["PRECTOTCORR"] is not None else (
+                           rec["cumulative_rain_mm"] / 7.0 if rec and rec["cumulative_rain_mm"] else None)
+        # Moisture should come from the latest rule-engine simulation (Soil Moisture %)
+        # if missing, we default to RH2M as a fallback display only
+        moisture_val = rec["simulated_moisture_percent"] if rec and rec["simulated_moisture_percent"] is not None else (
+                          wx["RH2M"] if wx and wx["RH2M"] is not None else None)
+
         row = {
             "field_id": fid,
             "farm_name": f.get("farm_name"),
@@ -342,9 +406,9 @@ def _local_get_detailed_field_status(farmer_email=None):
             "recommended_water_mm": rec["recommended_water_mm"] if rec else None,
             "generated_at": rec["generated_at"] if rec else None,
             "analysis_date": rec["analysis_date"] if rec else None,
-            "moisture": wx["RH2M"] if wx else None,
-            "temp": wx["T2M"] if wx else None,
-            "rain": wx["PRECTOTCORR"] if wx else None,
+            "temp": temp_val,
+            "rain": rain_val,
+            "moisture": moisture_val,
         }
         result.append(row)
     conn.close()
@@ -444,8 +508,8 @@ if _BIGQUERY_AVAILABLE:
         SchemaField("fao_validation", "STRING", mode="NULLABLE", description="JSON: FAO CLIMWAT cross-validation result"),
         SchemaField("fao_data_quality", "STRING", mode="NULLABLE", description="FAO validation quality: GOOD | WARNING | CRITICAL"),
         SchemaField("fao_nearest_station", "STRING", mode="NULLABLE", description="Nearest FAO CLIMWAT station name"),
-        SchemaField("fao_reference_eto_mm", "FLOAT64", mode="NULLABLE", description="FAO monthly reference ET₀ (mm/day)"),
-        SchemaField("fao_deviation_pct", "FLOAT64", mode="NULLABLE", description="ET₀ deviation from FAO reference (%)"),
+        SchemaField("fao_reference_eto_mm", "FLOAT64", mode="NULLABLE", description="FAO monthly reference ET0 (mm/day)"),
+        SchemaField("fao_deviation_pct", "FLOAT64", mode="NULLABLE", description="ET0 deviation from FAO reference (%)"),
     ]
     
     FIELD_REGISTRY_SCHEMA: list[SchemaField] = [
@@ -491,7 +555,7 @@ def get_client() -> bigquery.Client:
 def ensure_dataset(client: bigquery.Client | None = None) -> None:
     """
     Create the dataset if it does not already exist.
-    Idempotent – safe to call on every cold-start.
+    Idempotent - safe to call on every cold-start.
     """
     client = client or get_client()
     dataset_ref = bigquery.Dataset(f"{PROJECT_ID}.{DATASET_ID}")
@@ -829,6 +893,7 @@ def get_latest_recommendations(urgency_filter=None, limit=100, farmer_email=None
 def _bq_get_latest_recommendations(
     urgency_filter: str | None = None,
     limit: int = 100,
+    farmer_email: str | None = None,
     client: bigquery.Client | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -844,18 +909,25 @@ def _bq_get_latest_recommendations(
     """
     client = client or get_client()
     urgency_clause = ""
+    email_clause = ""
     params: list[bigquery.ScalarQueryParameter] = [
         bigquery.ScalarQueryParameter("limit_val", "INT64", limit),
     ]
     if urgency_filter:
         urgency_clause = "AND final_urgency = @urgency"
         params.append(bigquery.ScalarQueryParameter("urgency", "STRING", urgency_filter))
+    if farmer_email:
+        email_clause = "AND farmer_email = @email"
+        params.append(bigquery.ScalarQueryParameter("email", "STRING", farmer_email))
 
     sql = f"""
         WITH ranked AS (
-            SELECT *,
+            SELECT r.*,
+                   f.farmer_email,
                    ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY generated_at DESC) AS rn
-            FROM `{PROJECT_ID}.{DATASET_ID}.{RECOMMENDATIONS_TABLE_ID}`
+            FROM `{PROJECT_ID}.{DATASET_ID}.{RECOMMENDATIONS_TABLE_ID}` r
+            LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.{FIELD_REGISTRY_TABLE_ID}` f
+              ON r.field_id = f.field_id
         )
         SELECT
             recommendation_id, field_id, crop_type, generated_at,
@@ -863,7 +935,7 @@ def _bq_get_latest_recommendations(
             cumulative_et0_mm, cumulative_rain_mm, net_water_deficit_mm,
             triggered_rules, summary
         FROM ranked
-        WHERE rn = 1 {urgency_clause}
+        WHERE rn = 1 {urgency_clause} {email_clause}
         ORDER BY generated_at DESC
         LIMIT @limit_val
     """
@@ -877,20 +949,41 @@ def get_dashboard_summary(farmer_email=None):
         return _local_get_dashboard_summary(farmer_email)
     return _bq_get_dashboard_summary(farmer_email)
 
-def _bq_get_dashboard_summary(client: bigquery.Client | None = None) -> dict[str, Any]:
+def _bq_get_dashboard_summary(
+    farmer_email: str | None = None,
+    client: bigquery.Client | None = None,
+) -> dict[str, Any]:
     """
     Return aggregated dashboard statistics:
         - total active fields
         - urgency distribution (last recommendation per field)
-        - average ET₀ across all fields (last 7 days)
+        - average ET0 across all fields (last 7 days)
         - total recommended water volume (m³, assuming 1 ha)
     """
     client = client or get_client()
+    params: list[bigquery.ScalarQueryParameter] = []
+    email_clause = ""
+    if farmer_email:
+        email_clause = "AND f.farmer_email = @email"
+        params.append(bigquery.ScalarQueryParameter("email", "STRING", farmer_email))
+
     sql = f"""
-        WITH latest_recs AS (
+        WITH latest_fields AS (
+            SELECT field_id, farmer_email,
+                   ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY updated_at DESC) AS rn
+            FROM `{PROJECT_ID}.{DATASET_ID}.{FIELD_REGISTRY_TABLE_ID}`
+            WHERE active = TRUE
+        ),
+        latest_recs AS (
             SELECT field_id, final_urgency, recommended_water_mm,
                    ROW_NUMBER() OVER (PARTITION BY field_id ORDER BY generated_at DESC) AS rn
             FROM `{PROJECT_ID}.{DATASET_ID}.{RECOMMENDATIONS_TABLE_ID}`
+        ),
+        joined AS (
+            SELECT f.field_id, f.farmer_email, r.final_urgency, r.recommended_water_mm
+            FROM latest_fields f
+            LEFT JOIN latest_recs r ON f.field_id = r.field_id AND r.rn = 1
+            WHERE f.rn = 1 {email_clause}
         )
         SELECT
             COUNT(DISTINCT field_id)                                    AS total_fields,
@@ -900,10 +993,10 @@ def _bq_get_dashboard_summary(client: bigquery.Client | None = None) -> dict[str
             COUNTIF(final_urgency = 'NONE')                             AS none_count,
             ROUND(AVG(recommended_water_mm), 2)                         AS avg_recommended_water_mm,
             ROUND(SUM(recommended_water_mm), 2)                         AS total_recommended_water_mm
-        FROM latest_recs
-        WHERE rn = 1
+        FROM joined
     """
-    rows = list(client.query(sql).result())
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    rows = list(client.query(sql, job_config=job_config).result())
     return dict(rows[0]) if rows else {}
 
 def get_detailed_field_status(farmer_email=None):
@@ -996,6 +1089,7 @@ def _bq_get_user_by_email(email: str, client: bigquery.Client | None = None) -> 
         SELECT *
         FROM `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
         WHERE email = @email
+        ORDER BY created_at DESC
         LIMIT 1
     """
     job_config = bigquery.QueryJobConfig(
@@ -1012,15 +1106,21 @@ def verify_user(email: str):
 
 def _bq_verify_user(email: str, client: bigquery.Client | None = None) -> None:
     client = client or get_client()
-    sql = f"""
-        UPDATE `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
-        SET is_verified = TRUE
-        WHERE email = @email
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("email", "STRING", email)]
-    )
-    client.query(sql, job_config=job_config).result()
+    current = _bq_get_user_by_email(email, client=client)
+    if not current:
+        return
+
+    table_ref = _full_table_id(USERS_TABLE_ID)
+    row = {
+        "user_id": current.get("user_id"),
+        "email": email,
+        "password_hash": current.get("password_hash"),
+        "is_verified": True,
+        "created_at": _now_utc(),
+    }
+    errors = client.insert_rows_json(table_ref, [row])
+    if errors:
+        raise RuntimeError(f"BigQuery insert (users verify) failed: {errors}")
 
 def update_user_password(email: str, password_hash: str):
     if _LOCAL_MODE:
@@ -1030,15 +1130,18 @@ def update_user_password(email: str, password_hash: str):
 
 def _bq_update_user_password(email: str, password_hash: str, client: bigquery.Client | None = None) -> None:
     client = client or get_client()
-    sql = f"""
-        UPDATE `{PROJECT_ID}.{DATASET_ID}.{USERS_TABLE_ID}`
-        SET password_hash = @password_hash
-        WHERE email = @email
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("password_hash", "STRING", password_hash),
-            bigquery.ScalarQueryParameter("email", "STRING", email)
-        ]
-    )
-    client.query(sql, job_config=job_config).result()
+    current = _bq_get_user_by_email(email, client=client)
+    if not current:
+        return
+
+    table_ref = _full_table_id(USERS_TABLE_ID)
+    row = {
+        "user_id": current.get("user_id"),
+        "email": email,
+        "password_hash": password_hash,
+        "is_verified": bool(current.get("is_verified", False)),
+        "created_at": _now_utc(),
+    }
+    errors = client.insert_rows_json(table_ref, [row])
+    if errors:
+        raise RuntimeError(f"BigQuery insert (users password) failed: {errors}")

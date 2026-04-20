@@ -41,6 +41,21 @@ serializer = URLSafeTimedSerializer(SECRET_KEY)
 
 WEATHER_LOOKBACK_DAYS = 7
 
+# Initialize app on startup (for Cloud Run and local deployment)
+_initialized = False
+
+@app.before_request
+def before_request():
+    global _initialized
+    if not _initialized:
+        try:
+            initialize()
+            _initialized = True
+            print("[INIT] Smart Irrigation Advisor initialized successfully")
+        except Exception as e:
+            print(f"[INIT ERROR] Failed to initialize app: {e}")
+            _initialized = False
+
 
 def initialize():
     # Initialize the local SQLite schema
@@ -113,31 +128,38 @@ def auth_verify():
         email = serializer.loads(token, salt='email-verify', max_age=86400) # 24 hours
         user = get_user_by_email(email)
         if not user:
-            return jsonify({"status": "error", "message": "User not found"}), 404
+            return """<html><body style="font-family:Arial;text-align:center;padding:50px;"><h2 style="color:#d32f2f;">Error: User not found</h2><p><a href="/">Return to Dashboard</a></p></body></html>""", 404
         if user["is_verified"]:
-            return """<h2>Email already verified!</h2><p><a href="/">Go to Dashboard</a></p>"""
-            
+            return """<html><body style="font-family:Arial;text-align:center;padding:50px;"><h2 style="color:#4caf50;">✓ Email already verified!</h2><p>Your account is all set. <a href="/">Log in to Dashboard</a></p></body></html>"""
+
         verify_user(email)
-        return """<h2>Email successfully verified!</h2><p>You can now log in to the <a href="/">Dashboard</a>.</p>"""
+        return """<html><body style="font-family:Arial;text-align:center;padding:50px;"><h2 style="color:#4caf50;">✓ Email successfully verified!</h2><p>Your email has been confirmed. <a href="/">Go to Dashboard</a></p></body></html>"""
     except SignatureExpired:
-        return """<h2>Error: Verification link expired</h2>""", 400
+        return """<html><body style="font-family:Arial;text-align:center;padding:50px;"><h2 style="color:#d32f2f;">Error: Verification link expired</h2><p>Please <a href="/">request a new verification email</a>.</p></body></html>""", 400
     except BadSignature:
-        return """<h2>Error: Invalid verification link</h2>""", 400
+        return """<html><body style="font-family:Arial;text-align:center;padding:50px;"><h2 style="color:#d32f2f;">Error: Invalid verification link</h2><p>The link may be corrupted. Please check your email and try again, or <a href="/">contact support</a>.</p></body></html>""", 400
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
-    data = request.json
-    email = data.get("email")
-    password = data.get("password")
-    
+    data = request.json or {}
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({"status": "error", "message": "Email and password are required"}), 400
+
     user = get_user_by_email(email)
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"status": "error", "message": "Invalid email or password"}), 401
-        
-    if not user["is_verified"]:
-        return jsonify({"status": "error", "message": "Please verify your email before logging in"}), 403
-        
-    auth_token = serializer.dumps(email, salt='auth-token')
+
+    if not user.get("is_verified", False):
+        if is_dev_mode():
+            verify_user(email)
+            user = get_user_by_email(email) or user
+        else:
+            return jsonify({"status": "error", "message": "Please verify your email before logging in"}), 403
+
+    auth_token = serializer.dumps(email, salt="auth-token")
     return jsonify({"status": "ok", "token": auth_token, "email": email})
 
 @app.route("/api/auth/forgot-password", methods=["POST"])
@@ -218,6 +240,7 @@ def evaluate_recommendations_endpoint():
     active_fields = list_active_fields(farmer_email=email)
     recommendations_out = []
     errors = []
+    should_send_auto_alert = False
     analysis_date = (date.today() - timedelta(days=1)).isoformat()
     
     for field in active_fields:
@@ -233,7 +256,10 @@ def evaluate_recommendations_endpoint():
                 end_date = date.today() - timedelta(days=1)
                 start_date = end_date - timedelta(days=days - 1)
                 weather_records = fetch_weather_data(lat, field["longitude"], start_date, end_date)
-            
+                # Always persist fetched records so email/dashboard can read them
+                if weather_records:
+                    insert_weather_records(field_id, weather_records)
+
             if not weather_records:
                 errors.append(f"Field {field_id}: no weather metadata")
                 continue
@@ -249,14 +275,8 @@ def evaluate_recommendations_endpoint():
             
             alert_result = False
             if recommendation.final_urgency.value in ["HIGH", "CRITICAL"]:
-                alert_result = send_irrigation_alert(
-                    to_email=farmer_email,
-                    farm_name=farm_name,
-                    crop_type=crop_type,
-                    recommendation=recommendation.recommended_water_mm,
-                    moisture=getattr(recommendation, "simulated_moisture_percent", 50.0),
-                    action=recommendation.summary
-                )
+                should_send_auto_alert = True
+                alert_result = True  # We will send it at the end
             
             recommendations_out.append({
                 "field_id": field_id,
@@ -272,10 +292,18 @@ def evaluate_recommendations_endpoint():
         except Exception as exc:
             errors.append(f"Field {field_id}: {exc}")
 
+    auto_alert_msg = ""
+    # If any field has HIGH or CRITICAL urgency, auto-send the consolidated alert email
+    if should_send_auto_alert and email:
+        ok, msg = _dispatch_alert(email)
+        auto_alert_msg = msg if ok else "Auto-alert email failed"
+
     return jsonify({
         "status": "ok" if not errors else "partial",
+        "fields_processed": len(active_fields),
         "recommendations": recommendations_out,
-        "errors": errors
+        "errors": errors,
+        "auto_alert_msg": auto_alert_msg
     })
 
 @app.route("/api/fields/add", methods=["POST"])
@@ -329,13 +357,7 @@ def get_fields_status_endpoint():
     status_data = get_detailed_field_status(farmer_email=email)
     return jsonify({"status": "ok", "data": status_data})
 
-@app.route("/api/alerts/send", methods=["GET"])
-def send_alert_endpoint():
-    """Manually send a field status summary alert email to the registered farmer."""
-    email = request.args.get("email")
-    if not email:
-        return jsonify({"status": "error", "message": "Email is required"}), 400
-
+def _dispatch_alert(email):
     fields = get_detailed_field_status(farmer_email=email)
     if not fields:
         return jsonify({"status": "error", "message": "No fields found for this user"}), 404
@@ -599,9 +621,25 @@ def send_alert_endpoint():
         msg = f"Alert email dispatched for {total_n} field(s)."
         if urgent_count:
             msg += f" {urgent_count} field(s) require urgent irrigation!"
+        return True, msg
+    else:
+        return False, "Failed to send email. Check SMTP config."
+
+@app.route("/api/alerts/send", methods=["GET"])
+def send_alert_endpoint():
+    """Manually send a field status summary alert email to the registered farmer."""
+    email = request.args.get("email")
+    if not email:
+        return jsonify({"status": "error", "message": "Email is required"}), 400
+    
+    if not get_detailed_field_status(farmer_email=email):
+        return jsonify({"status": "error", "message": "No fields found for this user"}), 404
+
+    ok, msg = _dispatch_alert(email)
+    if ok:
         return jsonify({"status": "ok", "message": msg})
     else:
-        return jsonify({"status": "error", "message": "Failed to send email. Check SMTP config."}), 500
+        return jsonify({"status": "error", "message": msg}), 500
 
 
 @app.route("/api/recommendations", methods=["GET"])
